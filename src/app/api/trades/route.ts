@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getOrders } from "@/lib/alpaca/client";
 import { PaperTradingSafetyError } from "@/lib/alpaca/safety";
+import { isPaperOrderExecutionEnabled } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +10,8 @@ export async function GET() {
     const orders = await getOrders(50);
     return NextResponse.json({
       paperOnly: true,
+      orderExecutionEnabled: isPaperOrderExecutionEnabled(),
+      liveTradingAllowed: false,
       trades: orders.map((o) => ({
         id: o.id,
         symbol: o.symbol,
@@ -27,6 +30,14 @@ export async function GET() {
     const message =
       error instanceof Error ? error.message : "Failed to load trade history";
     const status = error instanceof PaperTradingSafetyError ? 403 : 500;
-    return NextResponse.json({ error: message, paperOnly: true }, { status });
+    return NextResponse.json(
+      {
+        error: message,
+        paperOnly: true,
+        orderExecutionEnabled: isPaperOrderExecutionEnabled(),
+        liveTradingAllowed: false,
+      },
+      { status },
+    );
   }
 }

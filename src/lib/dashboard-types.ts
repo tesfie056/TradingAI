@@ -12,6 +12,7 @@ import type {
   DecisionPerformanceEntry,
   PerformanceSummary,
 } from "@/lib/performance/types";
+import type { MarketCondition } from "@/lib/stocks/market-condition";
 
 export type AccountPayload = {
   paperOnly: boolean;
@@ -58,7 +59,8 @@ export type DecisionPayload = {
   decisions: AiDecision[];
   clock: MarketClockStatus;
   news: NewsBundle;
-  orderExecutionEnabled: false;
+  marketCondition?: MarketCondition | null;
+  orderExecutionEnabled: boolean;
 };
 
 export type NewsPayload = {
@@ -68,7 +70,7 @@ export type NewsPayload = {
   bySymbol: Record<string, SymbolNewsAnalysis>;
   status: NewsFetchStatus;
   aiStatus: AiProviderStatus;
-  orderExecutionEnabled: false;
+  orderExecutionEnabled: boolean;
 };
 
 export type TradeRow = {
@@ -94,7 +96,7 @@ export type SafetyPayload = {
 
 export type AiHealthPayload = {
   paperOnly: true;
-  orderExecutionEnabled: false;
+  orderExecutionEnabled: boolean;
   liveTradingAllowed: false;
   requestedProvider: "heuristic" | "ollama";
   ollama: {
@@ -120,6 +122,7 @@ export type DashboardData = {
   clock: MarketClockStatus | null;
   market: MarketPayload | null;
   decisions: AiDecision[];
+  marketCondition: MarketCondition | null;
   news: NewsBundle | null;
   aiHealth: AiHealthPayload | null;
   decisionHistory: DecisionHistoryEntry[];
@@ -128,5 +131,5 @@ export type DashboardData = {
   trades: TradeRow[];
   error: string | null;
   loadedAt: string;
-  orderExecutionEnabled: false;
+  orderExecutionEnabled: boolean;
 };

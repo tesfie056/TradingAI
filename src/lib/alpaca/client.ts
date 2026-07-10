@@ -166,7 +166,7 @@ export async function getLatestBars(
   return result;
 }
 
-export type BarTimeframe = "1Min" | "5Min";
+export type BarTimeframe = "1Min" | "5Min" | "15Min";
 
 /**
  * Recent historical bars for trend / volatility heuristics.
@@ -209,9 +209,9 @@ export type PlaceOrderInput = {
 };
 
 /**
- * Paper order placement — DISABLED by default (Phase 1–2).
- * Not exposed via any API route. Requires explicit ENABLE_PAPER_ORDER_EXECUTION=true
- * when order execution is intentionally enabled in a later phase.
+ * Paper order placement — DISABLED by default.
+ * Only called from the manual approval submit path after all gates pass.
+ * Requires ENABLE_PAPER_ORDER_EXECUTION=true. Live trading remains blocked.
  */
 export async function placePaperOrder(
   input: PlaceOrderInput,

@@ -26,3 +26,13 @@ body {
   font-family: var(--font-body), system-ui, sans-serif;
   min-height: 100%;
 }
+
+/* Keep dense tables readable when horizontally scrolled on small screens */
+table {
+  border-collapse: collapse;
+}
+
+th,
+td {
+  vertical-align: top;
+}

@@ -80,13 +80,21 @@ export type BacktestResult = {
   symbols: string[];
   timeframe: "5Min" | "15Min" | "1Hour";
   barsUsed: number;
+  /** Optional requested window (ISO dates). */
+  startDate?: string | null;
+  endDate?: string | null;
   decisions: BacktestTradeSim[];
   summary: {
     total: number;
     buy: number;
     sell: number;
     hold: number;
+    /** Non-HOLD simulated trades. */
+    tradeCount: number;
+    winRate: number | null;
     avgEstimatedPnlPct: number | null;
+    estimatedPnlPctTotal: number | null;
+    maxDrawdownPct: number | null;
     accuracy: number | null;
   };
 };

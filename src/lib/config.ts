@@ -11,7 +11,9 @@ export const BLOCKED_TRADING_HOSTS = [
   "api.alpaca.markets/",
 ] as const;
 
-/** Parse a comma-separated watchlist string into uppercase symbols. */
+import { filterUsStockSymbols } from "@/lib/stocks/universe";
+
+/** Parse a comma-separated U.S. stock watchlist (crypto/non-equity rejected). */
 export function parseWatchlist(raw: string | undefined | null): string[] {
   if (!raw || !raw.trim()) {
     return ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
@@ -29,8 +31,10 @@ export function parseWatchlist(raw: string | undefined | null): string[] {
     symbols.push(symbol);
   }
 
-  return symbols.length > 0
-    ? symbols
+  const stocksOnly = filterUsStockSymbols(symbols);
+
+  return stocksOnly.length > 0
+    ? stocksOnly
     : ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
 }
 
@@ -40,6 +44,22 @@ export function getWatchlist(): string[] {
 
 export function isPaperOrderExecutionEnabled(): boolean {
   return process.env.ENABLE_PAPER_ORDER_EXECUTION === "true";
+}
+
+/** Max estimated USD notional per manual paper trade (default $500). */
+export function getMaxPaperTradeNotional(): number {
+  const raw = process.env.MAX_PAPER_TRADE_NOTIONAL;
+  const n = raw != null && raw.trim() !== "" ? Number(raw) : 500;
+  if (!Number.isFinite(n) || n <= 0) return 500;
+  return n;
+}
+
+/** Max manual paper trades per UTC day (default 5). */
+export function getMaxDailyPaperTrades(): number {
+  const raw = process.env.MAX_DAILY_PAPER_TRADES;
+  const n = raw != null && raw.trim() !== "" ? Number(raw) : 5;
+  if (!Number.isFinite(n) || n < 1) return 5;
+  return Math.floor(n);
 }
 
 export function getAlpacaCredentials() {

@@ -7,26 +7,29 @@ import {
 import {
   getLatestQuotes,
   getMarketClock,
-  getRecentBars,
 } from "@/lib/alpaca/client";
 import { PaperTradingSafetyError } from "@/lib/alpaca/safety";
-import { getWatchlist } from "@/lib/config";
+import { getWatchlist, isPaperOrderExecutionEnabled } from "@/lib/config";
 import { analyzeWatchlistNews } from "@/lib/news/analyze";
 import { fetchWatchlistNews } from "@/lib/news";
+import {
+  fetchMarketCondition,
+  fetchMultiTimeframeBars,
+} from "@/lib/stocks/fetch-context";
 
 export const dynamic = "force-dynamic";
-
-const BAR_TIMEFRAME = "5Min" as const;
 
 export async function GET() {
   try {
     const symbols = getWatchlist();
-    const [clock, quotes, recentBars, newsResult] = await Promise.all([
-      getMarketClock(),
-      getLatestQuotes(symbols),
-      getRecentBars(symbols, BAR_TIMEFRAME, 24),
-      fetchWatchlistNews(symbols),
-    ]);
+    const [clock, quotes, multiBars, marketCondition, newsResult] =
+      await Promise.all([
+        getMarketClock(),
+        getLatestQuotes(symbols),
+        fetchMultiTimeframeBars(symbols),
+        fetchMarketCondition(),
+        fetchWatchlistNews(symbols),
+      ]);
 
     const { bySymbol: newsBySymbol, aiStatus } = await analyzeWatchlistNews(
       symbols,
@@ -36,10 +39,14 @@ export async function GET() {
     const decisions = generateWatchlistDecisions({
       symbols,
       quotes,
-      barsBySymbol: recentBars,
-      timeframe: BAR_TIMEFRAME,
+      barsBySymbol: multiBars.bars5Min,
+      bars1MinBySymbol: multiBars.bars1Min,
+      bars5MinBySymbol: multiBars.bars5Min,
+      bars15MinBySymbol: multiBars.bars15Min,
+      timeframe: "5Min",
       isMarketOpen: clock.isOpen,
       newsBySymbol,
+      marketCondition,
     });
 
     await appendDecisionHistory(decisions, {
@@ -49,21 +56,30 @@ export async function GET() {
 
     return NextResponse.json({
       paperOnly: true,
+      assetClass: "us_equity",
       watchlist: symbols,
       decisions,
       clock,
+      marketCondition,
       news: {
         provider: newsResult.provider,
         bySymbol: newsBySymbol,
         status: newsResult.status,
         aiStatus,
       },
-      orderExecutionEnabled: false,
+      orderExecutionEnabled: isPaperOrderExecutionEnabled(),
     });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Failed to generate AI decisions";
     const status = error instanceof PaperTradingSafetyError ? 403 : 500;
-    return NextResponse.json({ error: message, paperOnly: true }, { status });
+    return NextResponse.json(
+      {
+        error: message,
+        paperOnly: true,
+        orderExecutionEnabled: isPaperOrderExecutionEnabled(),
+      },
+      { status },
+    );
   }
 }

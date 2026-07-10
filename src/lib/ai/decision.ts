@@ -4,23 +4,31 @@ import type {
   AlpacaBar,
   AlpacaQuote,
   DataQuality,
-  RiskStatus,
+  MarketConditionLabel,
   SymbolMarketSnapshot,
 } from "@/lib/alpaca/types";
-import {
-  assessDataQuality,
-  WIDE_SPREAD_HOLD_PCT,
-} from "@/lib/market/data-quality";
-import { newsConfidenceDelta } from "@/lib/news/analyze";
+import { assessDataQuality } from "@/lib/market/data-quality";
 import type { SymbolNewsAnalysis } from "@/lib/news/types";
+import {
+  assessMarketCondition,
+  type MarketCondition,
+} from "@/lib/stocks/market-condition";
+import {
+  assessStockRisk,
+  buildDecisionScores,
+  buildExplanation,
+  chooseAction,
+  isReadyForManualPaperTrade,
+  newsToScore,
+} from "@/lib/stocks/scoring";
+import {
+  analyzeStockTechnicals,
+  technicalLeanToScore,
+} from "@/lib/stocks/technicals";
+import { filterUsStockSymbols } from "@/lib/stocks/universe";
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
-}
-
-function avg(nums: number[]): number {
-  if (nums.length === 0) return 0;
-  return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
 function toNewsContext(news?: SymbolNewsAnalysis): AiDecision["newsContext"] {
@@ -42,44 +50,18 @@ function toNewsContext(news?: SymbolNewsAnalysis): AiDecision["newsContext"] {
   };
 }
 
-function applyNewsToDecision(
-  decision: AiDecision,
-  news: SymbolNewsAnalysis | undefined,
-): AiDecision {
-  const newsContext = toNewsContext(news);
-  const { delta, note } = newsConfidenceDelta(news);
-  const reasons = [...decision.reasons];
-
-  if (news?.explanation) {
-    reasons.push(`News: ${news.explanation}`);
-  }
-  if (note) {
-    reasons.push(note);
-  }
-
-  // Safety HOLDs keep action; news only nudges confidence.
-  const confidence = clamp(
-    Number((decision.confidence + delta).toFixed(2)),
-    0.1,
-    0.95,
-  );
-
-  return {
-    ...decision,
-    confidence,
-    reasons,
-    newsContext,
-  };
-}
-
 function buildSnapshot(
   symbol: string,
   quote: AlpacaQuote | undefined,
-  bars: AlpacaBar[],
-  timeframe: "1Min" | "5Min",
+  bars5Min: AlpacaBar[],
   isMarketOpen: boolean,
-  nowMs?: number,
+  extras?: {
+    bars1Min?: AlpacaBar[];
+    bars15Min?: AlpacaBar[];
+    nowMs?: number;
+  },
 ): SymbolMarketSnapshot {
+  const bars = bars5Min;
   const bid = quote?.bid ?? null;
   const ask = quote?.ask ?? null;
   const mid =
@@ -91,9 +73,8 @@ function buildSnapshot(
     isMarketOpen,
     quote,
     bars,
-    nowMs,
+    nowMs: extras?.nowMs,
   });
-  const spreadPct = dataQuality.spreadPercent;
 
   return {
     symbol,
@@ -101,321 +82,207 @@ function buildSnapshot(
     ask,
     mid,
     last,
-    spreadPct,
+    spreadPct: dataQuality.spreadPercent,
     bars,
-    timeframe,
+    timeframe: "5Min",
     quoteTimestamp: quote?.timestamp ?? null,
     dataQuality,
+    bars1Min: extras?.bars1Min,
+    bars5Min,
+    bars15Min: extras?.bars15Min,
   };
 }
 
-function analyzeBars(bars: AlpacaBar[]) {
-  if (bars.length < 2) {
-    return {
-      trendPct: null as number | null,
-      rangePct: null as number | null,
-      volumeRatio: null as number | null,
-      trendLabel: "insufficient bar history" as const,
-    };
-  }
-
-  const first = bars[0].c;
-  const last = bars[bars.length - 1].c;
-  const trendPct = first > 0 ? (last - first) / first : null;
-
-  const highs = bars.map((b) => b.h);
-  const lows = bars.map((b) => b.l);
-  const high = Math.max(...highs);
-  const low = Math.min(...lows);
-  const midPrice = (high + low) / 2 || last;
-  const rangePct = midPrice > 0 ? (high - low) / midPrice : null;
-
-  const volumes = bars.map((b) => b.v).filter((v) => v > 0);
-  let volumeRatio: number | null = null;
-  if (volumes.length >= 3) {
-    const recent = volumes.slice(-3);
-    const earlier = volumes.slice(0, -3);
-    const base = earlier.length > 0 ? avg(earlier) : avg(volumes);
-    volumeRatio = base > 0 ? avg(recent) / base : null;
-  }
-
-  let trendLabel: "up" | "down" | "flat" | "insufficient bar history" = "flat";
-  if (trendPct == null) trendLabel = "insufficient bar history";
-  else if (trendPct > 0.0015) trendLabel = "up";
-  else if (trendPct < -0.0015) trendLabel = "down";
-
-  return { trendPct, rangePct, volumeRatio, trendLabel };
-}
-
-function forceHoldDecision(
-  snapshot: SymbolMarketSnapshot,
-  reasons: string[],
-  riskWarnings: string[],
-  confidence: number,
-  metrics: AiDecision["metrics"],
-): AiDecision {
+function defaultMarket(): MarketCondition {
   return {
-    symbol: snapshot.symbol,
-    action: "HOLD",
-    confidence,
-    reasons,
-    riskWarnings,
-    riskStatus: "high",
-    timestamp: new Date().toISOString(),
+    label: "unclear",
+    marketScore: 0.5,
+    spyTrendPct: null,
+    qqqTrendPct: null,
+    explanation: "Market benchmarks (SPY/QQQ) not available.",
     paperOnly: true,
-    dataQuality: snapshot.dataQuality,
-    metrics,
   };
 }
 
 /**
- * Phase 3 heuristic decision for one symbol.
- * Safety guards still force HOLD; news only adjusts confidence.
- * Never places orders.
+ * Phase 6.5 stock decision for one U.S. equity symbol.
+ * Never places orders. Safety HOLDs still win.
  */
 export function decideForSymbol(
   snapshot: SymbolMarketSnapshot,
   news?: SymbolNewsAnalysis,
+  marketCondition?: MarketCondition,
 ): AiDecision {
   const timestamp = new Date().toISOString();
-  const reasons: string[] = [];
-  const riskWarnings: string[] = [...snapshot.dataQuality.warningMessages];
-  const { trendPct, rangePct, volumeRatio, trendLabel } = analyzeBars(
-    snapshot.bars,
-  );
+  const market = marketCondition ?? defaultMarket();
   const dq = snapshot.dataQuality;
 
-  const baseMetrics: AiDecision["metrics"] = {
-    last: snapshot.last,
-    mid: snapshot.mid,
-    spreadPct: snapshot.spreadPct,
-    trendPct,
-    rangePct,
-    volumeRatio,
-  };
+  const technical = analyzeStockTechnicals({
+    bars1Min: snapshot.bars1Min,
+    bars5Min: snapshot.bars5Min ?? snapshot.bars,
+    bars15Min: snapshot.bars15Min,
+    lastPrice: snapshot.last,
+  });
 
-  // --- Hard quality gates (no aggressive BUY/SELL) ---
-  if (!dq.isMarketOpen) {
-    return applyNewsToDecision(
-      forceHoldDecision(
-        snapshot,
-        [
-          "Market is closed — defaulting to HOLD (paper only, no auto-trade).",
-          "After-hours / closed-session quotes are not used for aggressive signals.",
-          ...(snapshot.last != null
-            ? [
-                `Last observed price $${snapshot.last.toFixed(2)} (informational).`,
-              ]
-            : []),
-        ],
-        riskWarnings,
-        0.85,
-        baseMetrics,
-      ),
-      news,
-    );
-  }
+  const risk = assessStockRisk({
+    dataQuality: dq,
+    technical,
+    market,
+    news,
+  });
 
-  if (dq.isQuoteStale) {
-    return applyNewsToDecision(
-      forceHoldDecision(
-        snapshot,
-        [
-          "Quote is stale — defaulting to HOLD until a fresh quote arrives.",
-          "Aggressive BUY/SELL blocked while quote freshness fails.",
-        ],
-        riskWarnings,
-        0.8,
-        baseMetrics,
-      ),
-      news,
-    );
-  }
+  const technicalScore = technicalLeanToScore(technical.technicalLean);
+  const newsScore = newsToScore(news);
+  const scores = buildDecisionScores({
+    technicalScore,
+    newsScore,
+    marketScore: market.marketScore,
+    riskScore: risk.riskScore,
+  });
 
-  if (dq.spreadPercent != null && dq.spreadPercent >= WIDE_SPREAD_HOLD_PCT) {
-    return applyNewsToDecision(
-      forceHoldDecision(
-        snapshot,
-        [
-          `Spread too wide (${(dq.spreadPercent * 100).toFixed(2)}%) — defaulting to HOLD.`,
-          "Wide spreads imply poor liquidity / after-hours distortion; no aggressive action.",
-        ],
-        riskWarnings,
-        0.82,
-        baseMetrics,
-      ),
-      news,
-    );
-  }
+  const { action, blockReasons } = chooseAction({
+    technicalLean: technical.technicalLean,
+    scores,
+    risk,
+    market,
+    dataQuality: dq,
+  });
 
-  let buyScore = 0;
-  let sellScore = 0;
-
-  if (snapshot.last == null || snapshot.last <= 0) {
-    return applyNewsToDecision(
-      forceHoldDecision(
-        snapshot,
-        ["No usable last price; defaulting to HOLD (paper only)."],
-        [...riskWarnings, "Missing latest price — cannot size a paper signal."],
-        0.15,
-        baseMetrics,
-      ),
-      news,
-    );
-  }
-
-  reasons.push(
-    `Last $${snapshot.last.toFixed(2)}` +
-      (snapshot.mid != null ? ` · mid $${snapshot.mid.toFixed(2)}` : ""),
-  );
-  reasons.push("Market open · quote freshness OK for heuristic scoring.");
-
-  if (snapshot.spreadPct == null) {
-    riskWarnings.push("Bid/ask incomplete — spread risk unknown.");
-  } else {
-    const spreadBps = snapshot.spreadPct * 10_000;
-    reasons.push(
-      `Spread ${(snapshot.spreadPct * 100).toFixed(3)}% (${spreadBps.toFixed(1)} bps)`,
-    );
-    if (snapshot.spreadPct < 0.001) {
-      buyScore += 1;
-      reasons.push("Tight spread supports liquidity for a paper BUY bias.");
-    } else if (snapshot.spreadPct >= 0.005) {
-      reasons.push("Elevated spread — staying cautious (no forced SELL).");
-    } else {
-      reasons.push("Spread is moderate — neutral on liquidity.");
-    }
-  }
-
-  if (trendPct == null) {
-    riskWarnings.push(
-      `Fewer than 2 ${snapshot.timeframe} bars — trend unavailable.`,
-    );
-  } else {
-    reasons.push(
-      `${snapshot.timeframe} trend ${trendLabel} (${(trendPct * 100).toFixed(2)}% over ${snapshot.bars.length} bars)`,
-    );
-    if (trendLabel === "up") buyScore += 2;
-    else if (trendLabel === "down") sellScore += 2;
-  }
-
-  if (rangePct != null) {
-    reasons.push(
-      `Range ${(rangePct * 100).toFixed(2)}% across recent ${snapshot.timeframe} bars`,
-    );
-    if (rangePct > 0.025) {
-      riskWarnings.push("Elevated intraday range — volatility risk.");
-      buyScore -= 0.5;
-      sellScore -= 0.5;
-    } else if (rangePct < 0.004) {
-      reasons.push("Compressed range — wait for clearer direction.");
-    }
-  }
-
-  if (volumeRatio != null) {
-    reasons.push(`Recent volume vs earlier bars: ${volumeRatio.toFixed(2)}x`);
-    if (volumeRatio >= 1.4 && trendLabel === "up") {
-      buyScore += 1;
-      reasons.push("Rising volume with uptrend supports BUY bias.");
-    } else if (volumeRatio >= 1.4 && trendLabel === "down") {
-      sellScore += 1;
-      reasons.push("Rising volume with downtrend supports SELL bias.");
-    } else if (volumeRatio < 0.6) {
-      riskWarnings.push("Thin recent volume — signal reliability lower.");
-    }
-  } else if (snapshot.bars.length > 0) {
-    reasons.push("Volume ratio unavailable (insufficient bar sample).");
-  }
-
-  if (!dq.hasRecentBars) {
-    riskWarnings.push("Bars not recent — reducing conviction.");
-    buyScore -= 1;
-    sellScore -= 1;
-  }
-
-  // Soft news lean on scores (still cannot override later safety — already passed).
-  if (news && news.items.length > 0) {
-    if (news.sentimentScore >= 0.25) buyScore += 0.5;
-    else if (news.sentimentScore <= -0.25) sellScore += 0.5;
-  }
-
-  let riskStatus: RiskStatus = "low";
-  if (riskWarnings.length >= 3 || (rangePct != null && rangePct > 0.04)) {
-    riskStatus = "high";
-  } else if (riskWarnings.length >= 1 || (rangePct != null && rangePct > 0.02)) {
-    riskStatus = "elevated";
-  }
-
-  if (riskStatus === "high") {
-    buyScore -= 1.5;
-    sellScore -= 1.5;
-    reasons.push("High risk status — forcing more conservative stance.");
-  }
-
-  let action: AiAction = "HOLD";
-  const edge = buyScore - sellScore;
-  if (edge >= 1.5 && riskStatus !== "high") {
-    action = "BUY";
-  } else if (edge <= -1.5 && riskStatus !== "high") {
-    action = "SELL";
-  } else {
-    action = "HOLD";
-    reasons.push(
-      "Scores not decisive enough — HOLD (paper only, no auto-trade).",
-    );
-  }
-
-  const magnitude = Math.abs(edge);
-  let confidence = 0.4 + magnitude * 0.12;
+  // Align confidence with action clarity
+  let confidence = scores.confidence;
   if (action === "HOLD") {
-    confidence = clamp(0.45 + (1 - magnitude) * 0.1, 0.35, 0.7);
+    confidence = clamp(0.4 + (1 - Math.abs(scores.finalScore - 0.5)) * 0.15, 0.3, 0.75);
+  } else {
+    confidence = clamp(0.5 + Math.abs(scores.finalScore - 0.5) * 0.9, 0.45, 0.9);
   }
-  if (riskStatus === "elevated") confidence *= 0.9;
-  if (riskStatus === "high") confidence *= 0.75;
+  if (risk.level === "medium") confidence *= 0.92;
+  if (risk.level === "high") confidence *= 0.75;
   confidence = clamp(Number(confidence.toFixed(2)), 0.1, 0.92);
 
-  return applyNewsToDecision(
-    {
-      symbol: snapshot.symbol,
-      action,
-      confidence,
-      reasons,
-      riskWarnings,
-      riskStatus,
-      timestamp,
-      paperOnly: true,
-      dataQuality: dq,
-      metrics: baseMetrics,
-    },
+  const explanation = buildExplanation({
+    action,
+    technical,
     news,
-  );
+    market,
+    risk,
+  });
+
+  const reasons: string[] = [
+    explanation.summary,
+    `Technical: ${explanation.technical}`,
+    `Market: ${explanation.market}`,
+    `News: ${explanation.news}`,
+    `Risk: ${explanation.risk}`,
+  ];
+  if (blockReasons.length > 0 && action === "HOLD") {
+    reasons.push(`Blocked: ${blockReasons.join(" ")}`);
+  }
+
+  const trendPct =
+    technical.trends.find((t) => t.timeframe === "5Min")?.trendPct ??
+    technical.trends.find((t) => t.trendPct != null)?.trendPct ??
+    null;
+
+  const ready = isReadyForManualPaperTrade({
+    action,
+    riskStatus: risk.riskStatus,
+    dataQuality: dq,
+  });
+
+  const marketPayload: NonNullable<AiDecision["marketCondition"]> = {
+    label: market.label as MarketConditionLabel,
+    marketScore: market.marketScore,
+    spyTrendPct: market.spyTrendPct,
+    qqqTrendPct: market.qqqTrendPct,
+    explanation: market.explanation,
+  };
+
+  return {
+    symbol: snapshot.symbol,
+    action: action as AiAction,
+    confidence,
+    reasons,
+    riskWarnings: [...dq.warningMessages, ...risk.reasons],
+    riskStatus: risk.riskStatus,
+    riskLevel: risk.level,
+    timestamp,
+    paperOnly: true,
+    assetClass: "us_equity",
+    dataQuality: dq,
+    newsContext: toNewsContext(news),
+    scores: {
+      ...scores,
+      confidence,
+    },
+    explanation,
+    marketCondition: marketPayload,
+    readyForManualPaperTrade: ready,
+    tradeBlockReasons: ready ? [] : blockReasons.length > 0 ? blockReasons : risk.reasons,
+    metrics: {
+      last: snapshot.last,
+      mid: snapshot.mid,
+      spreadPct: snapshot.spreadPct,
+      trendPct,
+      rangePct: technical.rangePct,
+      volumeRatio: technical.volumeRatio,
+      vwap: technical.vwap,
+      support: technical.support,
+      resistance: technical.resistance,
+      gapPct: technical.gapPct,
+      gapLabel: technical.gapLabel,
+    },
+  };
 }
 
 /**
- * Generate a structured decision for every watchlist symbol.
+ * Generate structured stock decisions for every watchlist symbol.
+ * U.S. equities only — non-stock symbols are filtered out.
  */
 export function generateWatchlistDecisions(input: {
   symbols: string[];
   quotes: AlpacaQuote[];
   barsBySymbol: Record<string, AlpacaBar[]>;
-  timeframe?: "1Min" | "5Min";
+  bars1MinBySymbol?: Record<string, AlpacaBar[]>;
+  bars5MinBySymbol?: Record<string, AlpacaBar[]>;
+  bars15MinBySymbol?: Record<string, AlpacaBar[]>;
+  timeframe?: "1Min" | "5Min" | "15Min";
   isMarketOpen: boolean;
   nowMs?: number;
   newsBySymbol?: Record<string, SymbolNewsAnalysis>;
+  marketCondition?: MarketCondition;
+  /** Optional SPY/QQQ bars when marketCondition not precomputed. */
+  spyBars5Min?: AlpacaBar[];
+  qqqBars5Min?: AlpacaBar[];
+  spyBars15Min?: AlpacaBar[];
+  qqqBars15Min?: AlpacaBar[];
 }): AiDecision[] {
-  const timeframe = input.timeframe ?? "5Min";
+  const symbols = filterUsStockSymbols(input.symbols);
   const quoteMap = new Map(input.quotes.map((q) => [q.symbol, q]));
+  const bars5 =
+    input.bars5MinBySymbol ?? input.barsBySymbol;
 
-  return input.symbols.map((symbol) => {
+  const market =
+    input.marketCondition ??
+    assessMarketCondition({
+      spyBars5Min: input.spyBars5Min,
+      qqqBars5Min: input.qqqBars5Min,
+      spyBars15Min: input.spyBars15Min,
+      qqqBars15Min: input.qqqBars15Min,
+    });
+
+  return symbols.map((symbol) => {
     const snapshot = buildSnapshot(
       symbol,
       quoteMap.get(symbol),
-      input.barsBySymbol[symbol] ?? [],
-      timeframe,
+      bars5[symbol] ?? input.barsBySymbol[symbol] ?? [],
       input.isMarketOpen,
-      input.nowMs,
+      {
+        bars1Min: input.bars1MinBySymbol?.[symbol],
+        bars15Min: input.bars15MinBySymbol?.[symbol],
+        nowMs: input.nowMs,
+      },
     );
-    return decideForSymbol(snapshot, input.newsBySymbol?.[symbol]);
+    return decideForSymbol(snapshot, input.newsBySymbol?.[symbol], market);
   });
 }
 
@@ -443,8 +310,10 @@ export function generateAiDecision(
       reasons: ["No data"],
       riskWarnings: ["No market data"],
       riskStatus: "unknown",
+      riskLevel: "unknown",
       timestamp: new Date().toISOString(),
       paperOnly: true,
+      assetClass: "us_equity",
       dataQuality: {
         isMarketOpen: false,
         isQuoteStale: true,
@@ -452,6 +321,8 @@ export function generateAiDecision(
         hasRecentBars: false,
         warningMessages: ["No market data"],
       } satisfies DataQuality,
+      readyForManualPaperTrade: false,
+      tradeBlockReasons: ["No market data"],
     }
   );
 }

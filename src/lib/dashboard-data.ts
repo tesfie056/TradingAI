@@ -14,7 +14,6 @@ import {
   getLatestQuotes,
   getMarketClock,
   getOrders,
-  getRecentBars,
 } from "@/lib/alpaca/client";
 import {
   assertPaperTradingOnly,
@@ -23,14 +22,17 @@ import {
 import {
   getAlpacaCredentials,
   getWatchlist,
+  isPaperOrderExecutionEnabled,
   PAPER_TRADING_BASE_URL,
 } from "@/lib/config";
 import { assessDataQuality } from "@/lib/market/data-quality";
 import { analyzeWatchlistNews } from "@/lib/news/analyze";
 import { fetchWatchlistNews } from "@/lib/news";
 import type { DashboardData } from "@/lib/dashboard-types";
-
-const BAR_TIMEFRAME = "5Min" as const;
+import {
+  fetchMarketCondition,
+  fetchMultiTimeframeBars,
+} from "@/lib/stocks/fetch-context";
 
 export async function loadDashboardData(): Promise<DashboardData> {
   try {
@@ -38,16 +40,25 @@ export async function loadDashboardData(): Promise<DashboardData> {
     assertPaperTradingOnly(baseUrl);
 
     const symbols = getWatchlist();
-    const [account, clock, quotes, latestBars, recentBars, orders, newsResult] =
-      await Promise.all([
-        getAccount(),
-        getMarketClock(),
-        getLatestQuotes(symbols),
-        getLatestBars(symbols),
-        getRecentBars(symbols, BAR_TIMEFRAME, 24),
-        getOrders(50),
-        fetchWatchlistNews(symbols),
-      ]);
+    const [
+      account,
+      clock,
+      quotes,
+      latestBars,
+      multiBars,
+      marketCondition,
+      orders,
+      newsResult,
+    ] = await Promise.all([
+      getAccount(),
+      getMarketClock(),
+      getLatestQuotes(symbols),
+      getLatestBars(symbols),
+      fetchMultiTimeframeBars(symbols),
+      fetchMarketCondition(),
+      getOrders(50),
+      fetchWatchlistNews(symbols),
+    ]);
 
     const { bySymbol: newsBySymbol, aiStatus } = await analyzeWatchlistNews(
       symbols,
@@ -57,10 +68,14 @@ export async function loadDashboardData(): Promise<DashboardData> {
     const decisions = generateWatchlistDecisions({
       symbols,
       quotes,
-      barsBySymbol: recentBars,
-      timeframe: BAR_TIMEFRAME,
+      barsBySymbol: multiBars.bars5Min,
+      bars1MinBySymbol: multiBars.bars1Min,
+      bars5MinBySymbol: multiBars.bars5Min,
+      bars15MinBySymbol: multiBars.bars15Min,
+      timeframe: "5Min",
       isMarketOpen: clock.isOpen,
       newsBySymbol,
+      marketCondition,
     });
 
     await appendDecisionHistory(decisions, {
@@ -78,9 +93,10 @@ export async function loadDashboardData(): Promise<DashboardData> {
     });
     const ollamaHealth = await checkOllamaHealth();
     const requestedAi = getAiProviderName();
+    const orderExecutionEnabled = isPaperOrderExecutionEnabled();
     const aiHealth = {
       paperOnly: true as const,
-      orderExecutionEnabled: false as const,
+      orderExecutionEnabled,
       liveTradingAllowed: false as const,
       requestedProvider: requestedAi,
       ollama: {
@@ -100,6 +116,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
     };
 
     const decisionBySymbol = new Map(decisions.map((d) => [d.symbol, d]));
+    const recentBars = multiBars.bars5Min;
 
     const market = symbols.map((symbol) => {
       const quote = quotes.find((q) => q.symbol === symbol);
@@ -158,6 +175,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
         clock,
       },
       decisions,
+      marketCondition,
       news: {
         provider: newsResult.provider,
         bySymbol: newsBySymbol,
@@ -197,7 +215,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
       })),
       error: null,
       loadedAt: new Date().toISOString(),
-      orderExecutionEnabled: false,
+      orderExecutionEnabled,
     };
   } catch (error) {
     const message =
@@ -217,6 +235,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
       clock: null,
       market: null,
       decisions: [],
+      marketCondition: null,
       news: null,
       aiHealth: null,
       decisionHistory: [],

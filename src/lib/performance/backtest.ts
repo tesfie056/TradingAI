@@ -48,15 +48,48 @@ function snapshotAt(
   };
 }
 
+function filterBarsByDateRange(
+  bars: AlpacaBar[],
+  startDate?: string | null,
+  endDate?: string | null,
+): AlpacaBar[] {
+  if (!startDate && !endDate) return bars;
+  const startMs = startDate ? Date.parse(`${startDate}T00:00:00.000Z`) : null;
+  const endMs = endDate ? Date.parse(`${endDate}T23:59:59.999Z`) : null;
+  return bars.filter((b) => {
+    const t = Date.parse(b.t);
+    if (Number.isNaN(t)) return false;
+    if (startMs != null && t < startMs) return false;
+    if (endMs != null && t > endMs) return false;
+    return true;
+  });
+}
+
+function maxDrawdownPct(pnlsInOrder: number[]): number | null {
+  if (pnlsInOrder.length === 0) return null;
+  let equity = 1;
+  let peak = 1;
+  let maxDd = 0;
+  for (const p of pnlsInOrder) {
+    equity *= 1 + p;
+    if (equity > peak) peak = equity;
+    const dd = peak > 0 ? (peak - equity) / peak : 0;
+    if (dd > maxDd) maxDd = dd;
+  }
+  return Number(maxDd.toFixed(5));
+}
+
 /**
  * Simple historical backtest: replay decision logic on past bars.
- * Does NOT call order APIs. Paper simulation only.
+ * Does NOT call order APIs. Paper simulation only. U.S. stocks only.
  */
 export async function runSimpleBacktest(input: {
   symbols: string[];
   lookbackBars?: number;
   step?: number;
   forwardBars?: number;
+  startDate?: string | null;
+  endDate?: string | null;
 }): Promise<BacktestResult> {
   const lookbackBars = input.lookbackBars ?? 80;
   const step = input.step ?? 6;
@@ -72,7 +105,12 @@ export async function runSimpleBacktest(input: {
   let barsUsed = 0;
 
   for (const symbol of input.symbols) {
-    const bars = barsBySymbol[symbol] ?? [];
+    const rawBars = barsBySymbol[symbol] ?? [];
+    const bars = filterBarsByDateRange(
+      rawBars,
+      input.startDate,
+      input.endDate,
+    );
     barsUsed += bars.length;
     if (bars.length < 30) continue;
 
@@ -103,6 +141,11 @@ export async function runSimpleBacktest(input: {
     }
   }
 
+  const tradeDecisions = decisions.filter((d) => d.action !== "HOLD");
+  const tradePnls = tradeDecisions
+    .map((d) => d.estimatedPnlPct)
+    .filter((n): n is number => n != null);
+  const wins = tradePnls.filter((p) => p > 0).length;
   const pnls = decisions
     .map((d) => d.estimatedPnlPct)
     .filter((n): n is number => n != null);
@@ -116,16 +159,28 @@ export async function runSimpleBacktest(input: {
     symbols: input.symbols,
     timeframe: "5Min",
     barsUsed,
+    startDate: input.startDate ?? null,
+    endDate: input.endDate ?? null,
     decisions,
     summary: {
       total: decisions.length,
       buy: decisions.filter((d) => d.action === "BUY").length,
       sell: decisions.filter((d) => d.action === "SELL").length,
       hold: decisions.filter((d) => d.action === "HOLD").length,
+      tradeCount: tradeDecisions.length,
+      winRate:
+        tradePnls.length > 0
+          ? Number((wins / tradePnls.length).toFixed(3))
+          : null,
       avgEstimatedPnlPct:
         pnls.length > 0
           ? Number((pnls.reduce((a, b) => a + b, 0) / pnls.length).toFixed(5))
           : null,
+      estimatedPnlPctTotal:
+        tradePnls.length > 0
+          ? Number(tradePnls.reduce((a, b) => a + b, 0).toFixed(5))
+          : null,
+      maxDrawdownPct: maxDrawdownPct(tradePnls),
       accuracy:
         judged.length > 0
           ? Number((correct / judged.length).toFixed(3))

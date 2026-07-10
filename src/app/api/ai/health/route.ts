@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { checkOllamaHealth, getAiProviderName } from "@/lib/ai/provider";
+import { isPaperOrderExecutionEnabled } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,7 @@ export async function GET() {
 
   return NextResponse.json({
     paperOnly: true,
-    orderExecutionEnabled: false,
+    orderExecutionEnabled: isPaperOrderExecutionEnabled(),
     liveTradingAllowed: false,
     requestedProvider,
     ollama: {

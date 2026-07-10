@@ -87,7 +87,31 @@ export type DataQuality = {
 /** Phase 2 structured action labels. */
 export type AiAction = "BUY" | "SELL" | "HOLD";
 
-export type RiskStatus = "low" | "elevated" | "high" | "unknown";
+/** Phase 6.5: low / medium / high (legacy "elevated" accepted as medium). */
+export type RiskStatus = "low" | "medium" | "high" | "unknown" | "elevated";
+
+export type MarketConditionLabel =
+  | "bullish"
+  | "bearish"
+  | "choppy"
+  | "unclear";
+
+export type DecisionScores = {
+  technicalScore: number;
+  newsScore: number;
+  marketScore: number;
+  riskScore: number;
+  finalScore: number;
+  confidence: number;
+};
+
+export type DecisionExplanation = {
+  technical: string;
+  news: string;
+  market: string;
+  risk: string;
+  summary: string;
+};
 
 export type SymbolMarketSnapshot = {
   symbol: string;
@@ -97,9 +121,12 @@ export type SymbolMarketSnapshot = {
   last: number | null;
   spreadPct: number | null;
   bars: AlpacaBar[];
-  timeframe: "1Min" | "5Min";
+  timeframe: "1Min" | "5Min" | "15Min";
   quoteTimestamp: string | null;
   dataQuality: DataQuality;
+  bars1Min?: AlpacaBar[];
+  bars5Min?: AlpacaBar[];
+  bars15Min?: AlpacaBar[];
 };
 
 export type AiDecision = {
@@ -109,8 +136,11 @@ export type AiDecision = {
   reasons: string[];
   riskWarnings: string[];
   riskStatus: RiskStatus;
+  /** Display risk: low / medium / high */
+  riskLevel?: "low" | "medium" | "high" | "unknown";
   timestamp: string;
   paperOnly: true;
+  assetClass?: "us_equity";
   dataQuality?: DataQuality;
   newsContext?: {
     overallSentiment: "positive" | "negative" | "neutral" | null;
@@ -119,6 +149,17 @@ export type AiDecision = {
     explanation: string;
     headlines: string[];
   };
+  scores?: DecisionScores;
+  explanation?: DecisionExplanation;
+  marketCondition?: {
+    label: MarketConditionLabel;
+    marketScore: number;
+    spyTrendPct: number | null;
+    qqqTrendPct: number | null;
+    explanation: string;
+  };
+  readyForManualPaperTrade?: boolean;
+  tradeBlockReasons?: string[];
   metrics?: {
     last: number | null;
     mid: number | null;
@@ -126,6 +167,11 @@ export type AiDecision = {
     trendPct: number | null;
     rangePct: number | null;
     volumeRatio: number | null;
+    vwap?: number | null;
+    support?: number | null;
+    resistance?: number | null;
+    gapPct?: number | null;
+    gapLabel?: string | null;
   };
 };
 

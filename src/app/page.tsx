@@ -1,14 +1,9 @@
-import { Dashboard } from "@/components/Dashboard";
+import { ControlRoom } from "@/components/ControlRoom";
 import { loadDashboardData } from "@/lib/dashboard-data";
 
 export const dynamic = "force-dynamic";
 
-export default async function Home() {
+export default async function HomePage() {
   const initialData = await loadDashboardData();
-
-  return (
-    <main className="flex flex-1 flex-col">
-      <Dashboard initialData={initialData} />
-    </main>
-  );
+  return <ControlRoom initialData={initialData} />;
 }

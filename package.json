@@ -1,0 +1,33 @@
+{
+  "name": "trading-ai",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "verify:phase1": "npx --yes tsx scripts/verify-phase1.ts",
+    "verify:phase2": "npx --yes tsx scripts/verify-phase2.ts",
+    "verify:phase2.5": "npx --yes tsx scripts/verify-phase2.5.ts",
+    "verify:phase3": "npx --yes tsx scripts/verify-phase3.ts",
+    "verify:phase3.5": "npx --yes tsx scripts/verify-phase3.5.ts",
+    "verify:phase4": "npx --yes tsx scripts/verify-phase4.ts",
+    "verify:phase5": "npx --yes tsx scripts/verify-phase5.ts"
+  },
+  "dependencies": {
+    "next": "16.2.10",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.10",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

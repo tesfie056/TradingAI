@@ -4,6 +4,7 @@ import type { AlpacaBar, SymbolMarketSnapshot } from "@/lib/alpaca/types";
 import { assessDataQuality } from "@/lib/market/data-quality";
 import { scoreDecisionOutcome } from "@/lib/performance/score";
 import type { BacktestResult, BacktestTradeSim } from "@/lib/performance/types";
+import { getStrategyVersion } from "@/lib/strategy/version";
 
 function windowBars(bars: AlpacaBar[], endIndex: number, size: number) {
   const start = Math.max(0, endIndex - size + 1);
@@ -156,6 +157,7 @@ export async function runSimpleBacktest(input: {
     paperOnly: true,
     orderExecutionEnabled: false,
     liveTradingAllowed: false,
+    strategyVersion: getStrategyVersion(),
     symbols: input.symbols,
     timeframe: "5Min",
     barsUsed,

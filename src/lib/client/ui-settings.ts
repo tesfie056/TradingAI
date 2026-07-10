@@ -1,4 +1,5 @@
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
+import type { OrderMode } from "@/lib/config";
 
 /**
  * Client-only UI preferences (localStorage).
@@ -8,6 +9,7 @@ import { filterUsStockSymbols } from "@/lib/stocks/universe";
 export type UiViewMode = "simple" | "advanced";
 export type UiCardDensity = "compact" | "comfortable";
 export type UiMaxRiskAllowed = "low" | "medium";
+export type UiOrderMode = OrderMode;
 
 export type UiSettings = {
   watchlistDraft: string;
@@ -19,6 +21,20 @@ export type UiSettings = {
   preferExecutionEnabled: boolean;
   /** Default paper qty for Control Room prepare/preview. */
   defaultQuantity: number;
+  /** Shares vs dollar amount for paper orders. */
+  orderMode: UiOrderMode;
+  /** Default dollar amount when orderMode is notional. */
+  defaultNotional: number;
+  /** Small-account watchlist filter: max share price (UI). */
+  smallAccountMaxPrice: number;
+  /** Small-account watchlist filter: min avg daily volume (UI). */
+  smallAccountMinVolume: number;
+  /** Small-account watchlist filter: max spread % (UI). */
+  smallAccountMaxSpread: number;
+  /** Avoid OTC when validating candidates. */
+  smallAccountAvoidOtc: boolean;
+  /** Major exchange only for candidate validation. */
+  smallAccountMajorOnly: boolean;
   /** Compact score badges vs fuller labels. */
   compactScores: boolean;
   /** Compact cards vs comfortable spacing. */
@@ -45,6 +61,13 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   maxSpreadPct: 0.01,
   preferExecutionEnabled: false,
   defaultQuantity: 1,
+  orderMode: "notional",
+  defaultNotional: 10,
+  smallAccountMaxPrice: 50,
+  smallAccountMinVolume: 1_000_000,
+  smallAccountMaxSpread: 0.5,
+  smallAccountAvoidOtc: true,
+  smallAccountMajorOnly: true,
   compactScores: true,
   cardDensity: "comfortable",
   showScoreDetails: true,
@@ -72,6 +95,9 @@ function emitUiSettingsChange(): void {
   cachedWatchlistDraft = null;
   cachedWatchlistSymbols = EMPTY_WATCHLIST;
   cachedDefaultQuantity = null;
+  cachedOrderMode = null;
+  cachedDefaultNotional = null;
+  cachedViewMode = null;
   for (const listener of uiSettingsListeners) listener();
 }
 
@@ -82,6 +108,11 @@ const SERVER_DEFAULT_QTY = 1;
 let cachedWatchlistDraft: string | null = null;
 let cachedWatchlistSymbols: string[] = EMPTY_WATCHLIST;
 let cachedDefaultQuantity: number | null = null;
+let cachedOrderMode: UiOrderMode | null = null;
+let cachedDefaultNotional: number | null = null;
+let cachedViewMode: UiViewMode | null = null;
+
+const SERVER_VIEW_MODE: UiViewMode = "simple";
 
 export function getLocalWatchlistSymbolsSnapshot(): string[] {
   const draft = loadUiSettings().watchlistDraft;
@@ -106,6 +137,40 @@ export function getDefaultQuantityServerSnapshot(): number {
   return SERVER_DEFAULT_QTY;
 }
 
+export function getOrderModeSnapshot(): UiOrderMode {
+  const mode = loadUiSettings().orderMode;
+  if (cachedOrderMode === mode) return cachedOrderMode;
+  cachedOrderMode = mode === "quantity" ? "quantity" : "notional";
+  return cachedOrderMode;
+}
+
+export function getOrderModeServerSnapshot(): UiOrderMode {
+  return "notional";
+}
+
+export function getDefaultNotionalSnapshot(): number {
+  const n = loadUiSettings().defaultNotional;
+  if (cachedDefaultNotional === n) return cachedDefaultNotional;
+  cachedDefaultNotional = Math.max(1, Number(n) || 10);
+  return cachedDefaultNotional;
+}
+
+export function getDefaultNotionalServerSnapshot(): number {
+  return 10;
+}
+
+export function getViewModeSnapshot(): UiViewMode {
+  const mode = loadUiSettings().viewMode;
+  const normalized = mode === "advanced" ? "advanced" : "simple";
+  if (cachedViewMode === normalized) return cachedViewMode;
+  cachedViewMode = normalized;
+  return normalized;
+}
+
+export function getViewModeServerSnapshot(): UiViewMode {
+  return SERVER_VIEW_MODE;
+}
+
 export function loadUiSettings(): UiSettings {
   if (typeof window === "undefined") return { ...DEFAULT_UI_SETTINGS };
   try {
@@ -120,6 +185,22 @@ export function loadUiSettings(): UiSettings {
         1,
         Math.floor(Number(parsed.defaultQuantity) || 1),
       ),
+      orderMode: parsed.orderMode === "quantity" ? "quantity" : "notional",
+      defaultNotional: Math.max(1, Number(parsed.defaultNotional) || 10),
+      smallAccountMaxPrice: Math.max(
+        1,
+        Number(parsed.smallAccountMaxPrice) || 50,
+      ),
+      smallAccountMinVolume: Math.max(
+        0,
+        Math.floor(Number(parsed.smallAccountMinVolume) || 1_000_000),
+      ),
+      smallAccountMaxSpread: Math.max(
+        0.01,
+        Number(parsed.smallAccountMaxSpread) || 0.5,
+      ),
+      smallAccountAvoidOtc: parsed.smallAccountAvoidOtc !== false,
+      smallAccountMajorOnly: parsed.smallAccountMajorOnly !== false,
       viewMode: parsed.viewMode === "advanced" ? "advanced" : "simple",
       cardDensity:
         parsed.cardDensity === "compact" ? "compact" : "comfortable",
@@ -140,6 +221,19 @@ export function saveUiSettings(settings: UiSettings): void {
     // Never persist a preference that implies live trading is available.
     preferExecutionEnabled: false,
     defaultQuantity: Math.max(1, Math.floor(Number(settings.defaultQuantity) || 1)),
+    orderMode: settings.orderMode === "quantity" ? "quantity" : "notional",
+    defaultNotional: Math.max(1, Number(settings.defaultNotional) || 10),
+    smallAccountMaxPrice: Math.max(1, Number(settings.smallAccountMaxPrice) || 50),
+    smallAccountMinVolume: Math.max(
+      0,
+      Math.floor(Number(settings.smallAccountMinVolume) || 1_000_000),
+    ),
+    smallAccountMaxSpread: Math.max(
+      0.01,
+      Number(settings.smallAccountMaxSpread) || 0.5,
+    ),
+    smallAccountAvoidOtc: settings.smallAccountAvoidOtc !== false,
+    smallAccountMajorOnly: settings.smallAccountMajorOnly !== false,
     viewMode: settings.viewMode === "advanced" ? "advanced" : "simple",
     cardDensity: settings.cardDensity === "compact" ? "compact" : "comfortable",
     maxRiskAllowed: settings.maxRiskAllowed === "low" ? "low" : "medium",

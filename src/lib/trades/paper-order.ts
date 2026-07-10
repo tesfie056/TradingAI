@@ -13,10 +13,14 @@ import { generateWatchlistDecisions } from "@/lib/ai/decision";
 import {
   getAlpacaCredentials,
   getMaxDailyPaperTrades,
-  getMaxPaperTradeNotional,
+  getMaxNotionalPerTrade,
+  getSmallAccountConfig,
   isPaperOrderExecutionEnabled,
+  isSmallAccountMode,
+  type OrderMode,
 } from "@/lib/config";
 import { assessDataQuality } from "@/lib/market/data-quality";
+import { SMALL_ACCOUNT_WARNINGS } from "@/lib/stocks/small-account";
 import {
   appendPaperTradeLog,
   countDailyPaperTrades,
@@ -65,6 +69,44 @@ function paperEndpointOk(): boolean {
   } catch {
     return false;
   }
+}
+
+function resolveSizing(input: {
+  orderMode: OrderMode;
+  qty?: number;
+  notional?: number;
+  estimatedPrice: number | null;
+}): {
+  qty: number;
+  notional: number | null;
+  estimatedShares: number | null;
+  estimatedNotional: number | null;
+} {
+  if (input.orderMode === "notional") {
+    const notional = Number(input.notional);
+    const estimatedShares =
+      input.estimatedPrice != null && input.estimatedPrice > 0
+        ? Number((notional / input.estimatedPrice).toFixed(6))
+        : null;
+    return {
+      qty: estimatedShares != null ? Math.max(0, estimatedShares) : 0,
+      notional,
+      estimatedShares,
+      estimatedNotional: notional,
+    };
+  }
+
+  const qty = Math.floor(Number(input.qty));
+  const estimatedNotional =
+    input.estimatedPrice != null && qty > 0
+      ? input.estimatedPrice * qty
+      : null;
+  return {
+    qty,
+    notional: null,
+    estimatedShares: null,
+    estimatedNotional,
+  };
 }
 
 async function resolveDecisionContext(input: {
@@ -134,7 +176,11 @@ async function resolveDecisionContext(input: {
 function toPreview(input: {
   symbol: string;
   side: PaperOrderSide;
+  orderMode: OrderMode;
   qty: number;
+  notional: number | null;
+  estimatedShares: number | null;
+  estimatedNotional: number | null;
   action: AiAction;
   riskStatus: RiskStatus;
   estimatedPrice: number | null;
@@ -155,7 +201,9 @@ function toPreview(input: {
     side: input.side,
     riskStatus: input.riskStatus,
     dataQuality: input.dataQuality,
+    orderMode: input.orderMode,
     qty: input.qty,
+    notional: input.notional,
     estimatedPrice: input.estimatedPrice,
     maxNotional: input.maxNotional,
     dailyTradeCount: input.dailyUsed,
@@ -165,25 +213,25 @@ function toPreview(input: {
     confirmed: input.confirmed,
   });
 
-  const estimatedNotional =
-    input.estimatedPrice != null && input.qty > 0
-      ? input.estimatedPrice * input.qty
-      : null;
-
   const canPrepare =
     (input.action === "BUY" || input.action === "SELL") &&
     actionToSide(input.action) === input.side;
+
+  const smallAccount = isSmallAccountMode();
 
   return {
     paperOnly: true,
     warning: "PAPER TRADE ONLY",
     symbol: input.symbol,
     side: input.side,
+    orderMode: input.orderMode,
     qty: input.qty,
+    notional: input.notional,
+    estimatedShares: input.estimatedShares,
     orderType: "market",
     timeInForce: "day",
     estimatedPrice: input.estimatedPrice,
-    estimatedNotional,
+    estimatedNotional: input.estimatedNotional,
     maxNotional: input.maxNotional,
     maxDailyPaperTrades: input.maxDaily,
     dailyPaperTradesUsed: input.dailyUsed,
@@ -193,6 +241,8 @@ function toPreview(input: {
     gates,
     canPrepare,
     canSubmit: gates.allowed,
+    smallAccountMode: smallAccount,
+    smallAccountWarnings: smallAccount ? [...SMALL_ACCOUNT_WARNINGS] : [],
   };
 }
 
@@ -200,10 +250,10 @@ export async function buildPaperOrderPreview(
   request: PaperOrderPreviewRequest,
 ): Promise<PaperOrderPreview> {
   const symbol = parseSymbol(request.symbol);
-  const qty = Number(request.qty);
   const side = request.side;
+  const orderMode = request.orderMode;
   const executionEnabled = isPaperOrderExecutionEnabled();
-  const maxNotional = getMaxPaperTradeNotional();
+  const maxNotional = getMaxNotionalPerTrade();
   const maxDaily = getMaxDailyPaperTrades();
   const dailyUsed = await countDailyPaperTrades();
   const endpointOk = paperEndpointOk();
@@ -215,10 +265,21 @@ export async function buildPaperOrderPreview(
     riskStatus: request.riskStatus,
   });
 
+  const sizing = resolveSizing({
+    orderMode,
+    qty: request.qty,
+    notional: request.notional,
+    estimatedPrice: ctx.estimatedPrice,
+  });
+
   return toPreview({
     symbol,
     side,
-    qty,
+    orderMode,
+    qty: sizing.qty,
+    notional: sizing.notional,
+    estimatedShares: sizing.estimatedShares,
+    estimatedNotional: sizing.estimatedNotional,
     action: ctx.action,
     riskStatus: ctx.riskStatus,
     estimatedPrice: ctx.estimatedPrice,
@@ -236,10 +297,10 @@ export async function submitManualPaperOrder(
   request: PaperOrderSubmitRequest,
 ): Promise<PaperOrderSubmitResult> {
   const symbol = parseSymbol(request.symbol);
-  const qty = Number(request.qty);
   const side = request.side;
+  const orderMode = request.orderMode;
   const executionEnabled = isPaperOrderExecutionEnabled();
-  const maxNotional = getMaxPaperTradeNotional();
+  const maxNotional = getMaxNotionalPerTrade();
   const maxDaily = getMaxDailyPaperTrades();
   const dailyUsed = await countDailyPaperTrades();
   const endpointOk = paperEndpointOk();
@@ -251,10 +312,21 @@ export async function submitManualPaperOrder(
     riskStatus: request.riskStatus,
   });
 
+  const sizing = resolveSizing({
+    orderMode,
+    qty: request.qty,
+    notional: request.notional,
+    estimatedPrice: ctx.estimatedPrice,
+  });
+
   const preview = toPreview({
     symbol,
     side,
-    qty,
+    orderMode,
+    qty: sizing.qty,
+    notional: sizing.notional,
+    estimatedShares: sizing.estimatedShares,
+    estimatedNotional: sizing.estimatedNotional,
     action: ctx.action,
     riskStatus: ctx.riskStatus,
     estimatedPrice: ctx.estimatedPrice,
@@ -281,19 +353,29 @@ export async function submitManualPaperOrder(
   }
 
   try {
-    const order = await placePaperOrder({
-      symbol,
-      qty,
-      side,
-      type: "market",
-      time_in_force: "day",
-    });
+    const order =
+      orderMode === "notional" && sizing.notional != null
+        ? await placePaperOrder({
+            symbol,
+            notional: sizing.notional,
+            side,
+            type: "market",
+            time_in_force: "day",
+          })
+        : await placePaperOrder({
+            symbol,
+            qty: sizing.qty,
+            side,
+            type: "market",
+            time_in_force: "day",
+          });
 
     await appendPaperTradeLog({
       id: order.id,
       symbol: order.symbol,
       side: order.side,
-      qty,
+      qty: order.qty ? Number(order.qty) : sizing.qty,
+      notional: sizing.notional,
       submittedAt: order.submitted_at || new Date().toISOString(),
     });
 
@@ -307,6 +389,10 @@ export async function submitManualPaperOrder(
         side: order.side,
         type: order.type,
         qty: order.qty,
+        notional:
+          orderMode === "notional" && sizing.notional != null
+            ? String(sizing.notional)
+            : null,
         status: order.status,
         submittedAt: order.submitted_at,
         filledAvgPrice: order.filled_avg_price,
@@ -329,4 +415,9 @@ export async function submitManualPaperOrder(
       error: message,
     };
   }
+}
+
+/** Expose read-only small account config for API/UI (no secrets). */
+export function getPaperOrderSmallAccountMeta() {
+  return getSmallAccountConfig();
 }

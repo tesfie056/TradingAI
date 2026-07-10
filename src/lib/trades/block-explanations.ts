@@ -134,6 +134,14 @@ function explainCode(
         detail: message ?? "Quantity must be a positive whole number.",
         whatToChange: "Enter a valid share quantity",
       };
+    case "invalid_notional":
+      return {
+        code,
+        category: "order",
+        title: "Invalid dollar amount",
+        detail: message ?? "Notional dollar amount must be a positive number.",
+        whatToChange: "Enter a valid dollar amount for the paper trade",
+      };
     case "invalid_side":
       return {
         code,
@@ -158,7 +166,7 @@ function explainCode(
         category: "execution",
         title: "Daily paper limit",
         detail: message ?? "The daily paper trade limit has been reached.",
-        whatToChange: "Wait for the next UTC day or lower MAX_DAILY_PAPER_TRADES usage",
+        whatToChange: "Wait for the next Eastern market day or lower MAX_DAILY_PAPER_TRADES usage",
       };
     default:
       return {
@@ -273,6 +281,7 @@ const PRIMARY_PRIORITY: Array<OrderGateCode | "missing_confirmation"> = [
   "max_notional",
   "max_daily_trades",
   "invalid_qty",
+  "invalid_notional",
   "invalid_side",
   "missing_approval",
   "missing_confirmation",
@@ -387,6 +396,7 @@ export function submitButtonState(input: {
       missing_approval: "Cannot submit — check confirmation box",
       missing_confirmation: "Cannot submit — check confirmation box",
       invalid_qty: "Cannot submit — invalid quantity",
+      invalid_notional: "Cannot submit — invalid dollar amount",
       invalid_side: "Cannot submit — side mismatch",
       max_notional: "Cannot submit — size limit",
       max_daily_trades: "Cannot submit — daily limit",

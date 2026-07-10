@@ -39,12 +39,16 @@ export class FinnhubNewsProvider implements NewsProvider {
 
   async getNewsForSymbols(symbols: string[]): Promise<NewsItem[]> {
     const { from, to } = lookbackRange(this.lookbackDays);
+    const unique = [...new Set(symbols.map((s) => s.toUpperCase()))];
+    const concurrency = 3;
     const all: NewsItem[] = [];
 
-    // Sequential to reduce free-tier rate-limit pressure.
-    for (const symbol of symbols) {
-      const items = await this.fetchSymbol(symbol.toUpperCase(), from, to);
-      all.push(...items);
+    for (let i = 0; i < unique.length; i += concurrency) {
+      const batch = unique.slice(i, i + concurrency);
+      const results = await Promise.all(
+        batch.map((symbol) => this.fetchSymbol(symbol, from, to)),
+      );
+      for (const items of results) all.push(...items);
     }
 
     return all;

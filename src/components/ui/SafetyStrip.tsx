@@ -1,12 +1,25 @@
 "use client";
 
+import type { AutoTradeEngineState } from "@/lib/auto-trade/runtime-settings/types";
+
 export function SafetyStrip({
   orderExecutionEnabled,
+  autoTradingEnabled,
+  engineState,
   compact = false,
 }: {
   orderExecutionEnabled: boolean;
+  autoTradingEnabled?: boolean;
+  engineState?: AutoTradeEngineState | string | null;
   compact?: boolean;
 }) {
+  const autoLabel = autoTradingEnabled
+    ? "Auto trading ON"
+    : "Auto trading OFF";
+  const stateLabel = engineState
+    ? String(engineState).replace(/_/g, " ")
+    : null;
+
   if (compact) {
     return (
       <p className="text-sm leading-relaxed text-amber-100/90">
@@ -14,7 +27,8 @@ export function SafetyStrip({
         {" · "}
         Execution {orderExecutionEnabled ? "ON" : "OFF"}
         {" · "}
-        No automatic trading
+        {autoLabel}
+        {stateLabel ? ` · Engine: ${stateLabel}` : null}
         {" · "}
         Live trading blocked
       </p>
@@ -37,10 +51,22 @@ export function SafetyStrip({
         <StatusDot tone={orderExecutionEnabled ? "warn" : "neutral"} />
         Execution {orderExecutionEnabled ? "ON" : "OFF"}
       </span>
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-rose-100">
-        <StatusDot tone="bad" />
-        No auto-trading
+      <span
+        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 ${
+          autoTradingEnabled
+            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+            : "border-rose-500/30 bg-rose-500/10 text-rose-100"
+        }`}
+      >
+        <StatusDot tone={autoTradingEnabled ? "ok" : "bad"} />
+        {autoLabel}
       </span>
+      {stateLabel ? (
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-600 bg-zinc-900 px-3 py-1.5 text-zinc-200">
+          <StatusDot tone="neutral" />
+          {stateLabel}
+        </span>
+      ) : null}
       <span className="inline-flex items-center gap-1.5 rounded-full border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-rose-100">
         <StatusDot tone="bad" />
         Live blocked

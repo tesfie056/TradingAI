@@ -19,6 +19,10 @@ function newId(symbol: string): string {
 export function suggestMonitorAction(
   decision: AiDecision,
 ): MonitorSuggestedAction {
+  if (decision.decisionLabel === "BUY" || decision.decisionLabel === "SELL") {
+    return decision.decisionLabel;
+  }
+  if (decision.decisionLabel === "WATCH") return "WATCH";
   if (decision.action === "BUY" || decision.action === "SELL") {
     return decision.action;
   }

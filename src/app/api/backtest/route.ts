@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getWatchlist, parseWatchlist } from "@/lib/config";
 import { runSimpleBacktest } from "@/lib/performance/backtest";
+import { appendStrategyBacktestResult } from "@/lib/strategy/results";
 import { PaperTradingSafetyError } from "@/lib/alpaca/safety";
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
 
@@ -52,6 +53,10 @@ export async function GET(request: Request) {
       forwardBars: 6,
       startDate,
       endDate,
+    });
+
+    void appendStrategyBacktestResult(result).catch(() => {
+      // non-fatal
     });
 
     return NextResponse.json(result);

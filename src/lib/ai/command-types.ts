@@ -27,6 +27,7 @@ export type AiCommandDecisionContext = {
   newsReason?: string;
   marketReason?: string;
   riskReason?: string;
+  lastPrice?: number | null;
 };
 
 export type AiCommandRequest = {

@@ -18,9 +18,15 @@ import {
   buildDecisionScores,
   buildExplanation,
   chooseAction,
+  chooseDecisionLabel,
   isReadyForManualPaperTrade,
+  liquidityToScore,
+  momentumToScore,
   newsToScore,
+  volumeToScore,
 } from "@/lib/stocks/scoring";
+import { isSmallAccountMode } from "@/lib/config";
+import { scoreSmallAccountFit } from "@/lib/stocks/small-account";
 import {
   analyzeStockTechnicals,
   technicalLeanToScore,
@@ -133,19 +139,67 @@ export function decideForSymbol(
 
   const technicalScore = technicalLeanToScore(technical.technicalLean);
   const newsScore = newsToScore(news);
+  const volumeScore = volumeToScore(technical.volumeRatio);
+  const momentumScore = momentumToScore(technical.technicalLean);
+  const liquidityScore = liquidityToScore(
+    snapshot.spreadPct,
+    technical.volumeRatio,
+  );
   const scores = buildDecisionScores({
     technicalScore,
     newsScore,
     marketScore: market.marketScore,
     riskScore: risk.riskScore,
+    volumeScore,
+    momentumScore,
+    liquidityScore,
   });
+
+  let adjustedFinalScore = scores.finalScore;
+  let smallAccountNote = "";
+  const smallAccountBlock: string[] = [];
+  if (isSmallAccountMode()) {
+    const fit = scoreSmallAccountFit({
+      lastPrice: snapshot.last,
+      spreadPercent: snapshot.spreadPct,
+      volumeRatio: technical.volumeRatio,
+      trendPct:
+        technical.trends.find((t) => t.timeframe === "5Min")?.trendPct ?? null,
+    });
+    adjustedFinalScore = clamp(
+      adjustedFinalScore + fit.bonus,
+      0.05,
+      0.95,
+    );
+    if (fit.reasons.length > 0) {
+      smallAccountNote = ` Small-account fit: ${fit.reasons.join("; ")}.`;
+    }
+    if (!fit.eligible) {
+      smallAccountBlock.push("Outside small-account price/quality filters.");
+    }
+  }
+
+  const scoresForAction = {
+    ...scores,
+    finalScore: adjustedFinalScore,
+  };
 
   const { action, blockReasons } = chooseAction({
     technicalLean: technical.technicalLean,
-    scores,
+    scores: scoresForAction,
     risk,
     market,
     dataQuality: dq,
+  });
+
+  const mergedBlockReasons = [...smallAccountBlock, ...blockReasons];
+
+  const decisionLabel = chooseDecisionLabel({
+    action,
+    blockReasons: mergedBlockReasons,
+    technicalLean: technical.technicalLean,
+    finalScore: scoresForAction.finalScore,
+    smallAccountBlocked: smallAccountBlock.length > 0,
   });
 
   // Align confidence with action clarity
@@ -174,8 +228,11 @@ export function decideForSymbol(
     `News: ${explanation.news}`,
     `Risk: ${explanation.risk}`,
   ];
-  if (blockReasons.length > 0 && action === "HOLD") {
-    reasons.push(`Blocked: ${blockReasons.join(" ")}`);
+  if (mergedBlockReasons.length > 0 && action === "HOLD") {
+    reasons.push(`Blocked: ${mergedBlockReasons.join(" ")}`);
+  }
+  if (smallAccountNote) {
+    reasons.push(smallAccountNote.trim());
   }
 
   const trendPct =
@@ -183,11 +240,12 @@ export function decideForSymbol(
     technical.trends.find((t) => t.trendPct != null)?.trendPct ??
     null;
 
-  const ready = isReadyForManualPaperTrade({
-    action,
-    riskStatus: risk.riskStatus,
-    dataQuality: dq,
-  });
+  const ready =
+    isReadyForManualPaperTrade({
+      action,
+      riskStatus: risk.riskStatus,
+      dataQuality: dq,
+    }) && smallAccountBlock.length === 0;
 
   const marketPayload: NonNullable<AiDecision["marketCondition"]> = {
     label: market.label as MarketConditionLabel,
@@ -200,6 +258,7 @@ export function decideForSymbol(
   return {
     symbol: snapshot.symbol,
     action: action as AiAction,
+    decisionLabel,
     confidence,
     reasons,
     riskWarnings: [...dq.warningMessages, ...risk.reasons],
@@ -211,13 +270,18 @@ export function decideForSymbol(
     dataQuality: dq,
     newsContext: toNewsContext(news),
     scores: {
-      ...scores,
+      ...scoresForAction,
       confidence,
     },
     explanation,
     marketCondition: marketPayload,
     readyForManualPaperTrade: ready,
-    tradeBlockReasons: ready ? [] : blockReasons.length > 0 ? blockReasons : risk.reasons,
+    tradeBlockReasons:
+      ready
+        ? []
+        : mergedBlockReasons.length > 0
+          ? mergedBlockReasons
+          : risk.reasons,
     metrics: {
       last: snapshot.last,
       mid: snapshot.mid,

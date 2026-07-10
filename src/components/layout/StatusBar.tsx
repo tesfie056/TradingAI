@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { StatusPill } from "@/components/ui/badges";
+import { formatTime } from "@/lib/format";
 
 export type StatusBarProps = {
   paperOnly?: boolean;
@@ -14,11 +15,22 @@ export type StatusBarProps = {
   safetyLabel?: string;
   viewMode?: "simple" | "advanced";
   onToggleViewMode?: () => void;
+  onAskAi?: () => void;
+  /** Active AI task while popup is closed/minimized */
+  aiThinking?: boolean;
+  /** Completed answers waiting while popup was closed */
+  aiResultsReady?: number;
+  /** Live monitor worker heartbeat (SSE) */
+  agentConnected?: boolean;
+  agentHeartbeatAt?: string | null;
+  agentRunning?: boolean;
+  agentScanning?: boolean;
 };
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/monitor", label: "Monitor" },
+  { href: "/auto-trade", label: "Auto Trade" },
   { href: "/watchlist", label: "Watchlist" },
   { href: "/trade", label: "Trade" },
   { href: "/assistant", label: "Assistant" },
@@ -45,6 +57,13 @@ export function StatusBar({
   safetyLabel,
   viewMode = "simple",
   onToggleViewMode,
+  onAskAi,
+  aiThinking = false,
+  aiResultsReady = 0,
+  agentConnected = false,
+  agentHeartbeatAt = null,
+  agentRunning = false,
+  agentScanning = false,
 }: StatusBarProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -68,10 +87,35 @@ export function StatusBar({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={() => router.push("/assistant")}
-              className="ui-btn border border-amber-500/45 bg-amber-500/15 text-amber-50 hover:bg-amber-500/25"
+              onClick={() => (onAskAi ? onAskAi() : router.push("/assistant"))}
+              className="ui-btn relative border border-amber-500/45 bg-amber-500/15 text-amber-50 hover:bg-amber-500/25"
+              aria-label={
+                aiThinking
+                  ? "AI Assistant — thinking"
+                  : aiResultsReady > 0
+                    ? "AI Assistant — result ready"
+                    : "AI Assistant"
+              }
             >
-              AI Assistant
+              <span className="inline-flex items-center gap-2">
+                AI Assistant
+                {aiThinking ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] text-amber-100/90">
+                    <span
+                      className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-300"
+                      aria-hidden
+                    />
+                    Thinking
+                  </span>
+                ) : null}
+                {!aiThinking && aiResultsReady > 0 ? (
+                  <span className="rounded bg-emerald-500/25 px-1.5 py-0.5 text-[11px] font-medium text-emerald-100 ring-1 ring-emerald-400/35">
+                    {aiResultsReady === 1
+                      ? "1 result ready"
+                      : `${aiResultsReady} results ready`}
+                  </span>
+                ) : null}
+              </span>
             </button>
             {onToggleViewMode ? (
               <button
@@ -108,6 +152,32 @@ export function StatusBar({
         </nav>
 
         <div className="flex gap-2 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] sm:flex-wrap sm:overflow-visible [&::-webkit-scrollbar]:hidden">
+          <StatusPill
+            label={
+              agentScanning
+                ? "Agent scanning"
+                : agentRunning
+                  ? "Agent live"
+                  : agentConnected
+                    ? "Agent idle"
+                    : "Agent offline"
+            }
+            tone={
+              agentScanning
+                ? "warn"
+                : agentRunning
+                  ? "ok"
+                  : agentConnected
+                    ? "neutral"
+                    : "bad"
+            }
+          />
+          {agentHeartbeatAt ? (
+            <StatusPill
+              label={`Heartbeat ${formatTime(agentHeartbeatAt)}`}
+              tone={agentConnected ? "ok" : "neutral"}
+            />
+          ) : null}
           <StatusPill
             label={paperOnly ? "Paper only" : "PAPER ONLY"}
             tone="accent"

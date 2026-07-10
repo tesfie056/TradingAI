@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
 import { SafetyStrip } from "@/components/ui/SafetyStrip";
 import { ScrollTable } from "@/components/ui/ScrollTable";
+import { PaperOrdersTable } from "@/components/trades/PaperOrdersTable";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { loadAiCommandHistory, type StoredAiCommand } from "@/lib/client/ui-settings";
 import { formatTime } from "@/lib/format";
@@ -331,39 +332,7 @@ export function LogsView() {
       {(kind === "all" || kind === "orders") && (
         <Panel title="Paper order preview / submission history">
           {trades.length > 0 ? (
-            <ScrollTable minWidthClass="min-w-[28rem] sm:min-w-[36rem]">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-xs text-[var(--muted)] uppercase">
-                    <th className="py-2 pr-3 font-medium">Submitted</th>
-                    <th className="py-2 pr-3 font-medium">Symbol</th>
-                    <th className="py-2 pr-3 font-medium">Side</th>
-                    <th className="py-2 pr-3 font-medium">Qty</th>
-                    <th className="py-2 font-medium">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trades.map((t) => (
-                    <tr
-                      key={t.id}
-                      className="border-b border-[var(--border)]/50"
-                    >
-                      <td className="py-2 pr-3 text-[var(--muted)]">
-                        {formatTime(t.submittedAt)}
-                      </td>
-                      <td className="py-2 pr-3 font-semibold">{t.symbol}</td>
-                      <td className="py-2 pr-3">
-                        <ActionBadge action={t.side} />
-                      </td>
-                      <td className="py-2 pr-3 tabular-nums">
-                        {t.qty ?? t.filledQty ?? "—"}
-                      </td>
-                      <td className="py-2 text-[var(--muted)]">{t.status}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTable>
+            <PaperOrdersTable trades={trades} timeColumn="submitted" />
           ) : (
             <EmptyState title="No paper trade approvals yet">
               <p>Manual paper submits will show here after confirmation.</p>

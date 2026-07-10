@@ -37,7 +37,8 @@ export type MonitorLogEvent =
   | "opportunity_expired"
   | "monitor_started"
   | "monitor_stopped"
-  | "rate_limited";
+  | "rate_limited"
+  | "symbol_scanned";
 
 export type MonitorLogEntry = {
   id: string;
@@ -70,7 +71,7 @@ export type MonitorAgentStatus = "running" | "stopped" | "scanning";
 export type MonitorStatus = {
   paperOnly: true;
   canPlaceOrders: false;
-  automaticTradingAllowed: false;
+  automaticTradingAllowed: boolean;
   status: MonitorAgentStatus;
   running: boolean;
   scanning: boolean;
@@ -78,11 +79,21 @@ export type MonitorStatus = {
   lastScanAt: string | null;
   nextScanAt: string | null;
   stocksScanned: number;
+  /** Watchlist symbols included in the last completed scan. */
+  scannedSymbols: string[];
   opportunitiesFound: number;
   activeOpportunities: number;
   topOpportunity: MonitorOpportunity | null;
+  /** Clear wording: top signal is chosen from all scanned symbols. */
+  topSignalLabel: string;
   lastError: string | null;
   ollamaAvailable: boolean | null;
   notifications: MonitorNotification[];
   recentLogs: MonitorLogEntry[];
+  /** Background worker (not page-triggered). */
+  workerMode?: boolean;
+  marketOpen?: boolean | null;
+  heartbeatAt?: string | null;
+  intervalOpenMs?: number;
+  intervalClosedMs?: number;
 };

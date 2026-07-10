@@ -1,3 +1,5 @@
+import { MARKET_TIMEZONE } from "@/lib/market/time";
+
 export function formatMoney(
   value: string | number | null | undefined,
   currency = "USD",
@@ -22,9 +24,19 @@ export function formatNumber(
   return n.toFixed(digits);
 }
 
+/** Format ISO timestamps in U.S. Eastern (market) time. */
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString();
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: MARKET_TIMEZONE,
+    month: "numeric",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  }).format(d);
 }

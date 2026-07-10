@@ -11,11 +11,13 @@ import type {
   AlpacaBar,
   AlpacaClock,
   AlpacaOrder,
+  AlpacaPosition,
   AlpacaQuote,
   MarketClockStatus,
 } from "@/lib/alpaca/types";
 import { isPaperOrderExecutionEnabled } from "@/lib/config";
 import { normalizeClock } from "@/lib/market/data-quality";
+import { buildBracketOrderBody } from "@/lib/trading/brackets";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -88,6 +90,10 @@ export async function getAccount(): Promise<AlpacaAccount> {
   return tradingFetch<AlpacaAccount>("/v2/account");
 }
 
+export async function getPositions(): Promise<AlpacaPosition[]> {
+  return tradingFetch<AlpacaPosition[]>("/v2/positions");
+}
+
 /** US equity market clock from Alpaca paper trading API. */
 export async function getMarketClock(): Promise<MarketClockStatus> {
   const raw = await tradingFetch<AlpacaClock>("/v2/clock");
@@ -101,6 +107,49 @@ export async function getOrders(limit = 50): Promise<AlpacaOrder[]> {
     direction: "desc",
   });
   return tradingFetch<AlpacaOrder[]>(`/v2/orders?${params}`);
+}
+
+/** Open / pending orders only. */
+export async function getOpenOrders(limit = 50): Promise<AlpacaOrder[]> {
+  const params = new URLSearchParams({
+    status: "open",
+    limit: String(limit),
+    direction: "desc",
+  });
+  return tradingFetch<AlpacaOrder[]>(`/v2/orders?${params}`);
+}
+
+/** Cancel a single open order by id. Paper only. */
+export async function cancelOrder(orderId: string): Promise<void> {
+  await tradingFetch<void>(`/v2/orders/${encodeURIComponent(orderId)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Cancel all open orders. Paper only. Does not close positions. */
+export async function cancelAllOrders(): Promise<void> {
+  await tradingFetch<void>("/v2/orders", { method: "DELETE" });
+}
+
+/**
+ * Close all open positions (market). Paper only.
+ * Separate from emergency stop — requires deliberate call.
+ */
+export async function closeAllPositions(): Promise<unknown> {
+  return tradingFetch<unknown>("/v2/positions", {
+    method: "DELETE",
+    body: JSON.stringify({ cancel_orders: false }),
+  });
+}
+
+/**
+ * Close a single position by symbol. Paper only.
+ */
+export async function closePosition(symbol: string): Promise<unknown> {
+  return tradingFetch<unknown>(
+    `/v2/positions/${encodeURIComponent(symbol.toUpperCase())}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function getLatestQuotes(
@@ -209,6 +258,8 @@ export type AlpacaAssetLookup = {
   tradable: boolean;
   class: string;
   exchange: string;
+  shortable: boolean;
+  fractionable: boolean;
 };
 
 /**
@@ -230,6 +281,8 @@ export async function lookupUsEquityAsset(
       tradable?: boolean;
       class?: string;
       exchange?: string;
+      shortable?: boolean;
+      fractionable?: boolean;
     }>(`/v2/assets/${encodeURIComponent(sym)}`);
 
     if (!asset?.symbol) return null;
@@ -240,20 +293,97 @@ export async function lookupUsEquityAsset(
       tradable: Boolean(asset.tradable),
       class: String(asset.class ?? ""),
       exchange: String(asset.exchange ?? ""),
+      shortable: Boolean(asset.shortable),
+      fractionable: Boolean(asset.fractionable),
     };
   } catch {
     return null;
   }
 }
 
-export type PlaceOrderInput = {
-  symbol: string;
-  qty: number;
-  side: "buy" | "sell";
-  type?: "market" | "limit";
-  time_in_force?: "day" | "gtc";
-  limit_price?: number;
-};
+export type PlaceOrderInput =
+  | {
+      symbol: string;
+      qty: number;
+      side: "buy" | "sell";
+      type?: "market" | "limit";
+      time_in_force?: "day" | "gtc";
+      limit_price?: number;
+      notional?: never;
+      order_class?: never;
+      take_profit?: never;
+      stop_loss?: never;
+    }
+  | {
+      symbol: string;
+      notional: number;
+      side: "buy" | "sell";
+      type?: "market" | "limit";
+      time_in_force?: "day" | "gtc";
+      limit_price?: number;
+      qty?: never;
+      order_class?: never;
+      take_profit?: never;
+      stop_loss?: never;
+    }
+  | {
+      symbol: string;
+      qty: number;
+      side: "buy" | "sell";
+      type?: "market";
+      time_in_force?: "day" | "gtc";
+      order_class: "bracket";
+      take_profit: { limit_price: number };
+      stop_loss: { stop_price: number };
+      notional?: never;
+      limit_price?: never;
+    };
+
+/** Build Alpaca order JSON — qty XOR notional, never both. Supports brackets. */
+export function buildAlpacaOrderBody(input: PlaceOrderInput): JsonRecord {
+  if ("order_class" in input && input.order_class === "bracket") {
+    return buildBracketOrderBody({
+      symbol: input.symbol,
+      qty: input.qty,
+      side: input.side,
+      takeProfitLimitPrice: input.take_profit.limit_price,
+      stopLossStopPrice: input.stop_loss.stop_price,
+      time_in_force: input.time_in_force,
+    }) as unknown as JsonRecord;
+  }
+
+  const hasQty = "qty" in input && input.qty != null;
+  const hasNotional = "notional" in input && input.notional != null;
+  if (hasQty && hasNotional) {
+    throw new Error("Alpaca order cannot include both qty and notional");
+  }
+
+  const body: JsonRecord = {
+    symbol: input.symbol.toUpperCase(),
+    side: input.side,
+    type: input.type ?? "market",
+    time_in_force: input.time_in_force ?? "day",
+  };
+
+  if ("notional" in input && input.notional != null) {
+    body.notional = String(input.notional);
+  } else if ("qty" in input && input.qty != null) {
+    body.qty = String(input.qty);
+  }
+
+  if ("limit_price" in input && input.limit_price != null) {
+    body.limit_price = String(input.limit_price);
+  }
+
+  if (body.qty != null && body.notional != null) {
+    throw new Error("Alpaca order cannot include both qty and notional");
+  }
+  if (body.qty == null && body.notional == null) {
+    throw new Error("Alpaca order requires qty or notional");
+  }
+
+  return body;
+}
 
 /**
  * Paper order placement — DISABLED by default.
@@ -269,17 +399,7 @@ export async function placePaperOrder(
     );
   }
 
-  const body: JsonRecord = {
-    symbol: input.symbol.toUpperCase(),
-    qty: String(input.qty),
-    side: input.side,
-    type: input.type ?? "market",
-    time_in_force: input.time_in_force ?? "day",
-  };
-
-  if (input.limit_price != null) {
-    body.limit_price = String(input.limit_price);
-  }
+  const body = buildAlpacaOrderBody(input);
 
   return tradingFetch<AlpacaOrder>("/v2/orders", {
     method: "POST",

@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { marketDayKey } from "@/lib/market/time";
 
 const HISTORY_DIR = path.join(process.cwd(), "data");
 const LOG_FILE = path.join(HISTORY_DIR, "paper-trade-log.jsonl");
@@ -9,13 +10,10 @@ type PaperTradeLogRow = {
   symbol: string;
   side: string;
   qty: number;
+  notional?: number | null;
   submittedAt: string;
   paperOnly: true;
 };
-
-function utcDayKey(iso: string = new Date().toISOString()): string {
-  return iso.slice(0, 10);
-}
 
 async function ensureDir() {
   await mkdir(HISTORY_DIR, { recursive: true });
@@ -47,13 +45,13 @@ async function readAll(): Promise<PaperTradeLogRow[]> {
   }
 }
 
-/** Count paper trades submitted today (UTC day). Never logs secrets. */
+/** Count paper trades submitted today (Eastern market day). Never logs secrets. */
 export async function countDailyPaperTrades(
   nowIso: string = new Date().toISOString(),
 ): Promise<number> {
-  const day = utcDayKey(nowIso);
+  const day = marketDayKey(nowIso);
   const rows = await readAll();
-  return rows.filter((r) => utcDayKey(r.submittedAt) === day).length;
+  return rows.filter((r) => marketDayKey(r.submittedAt) === day).length;
 }
 
 export async function appendPaperTradeLog(row: {
@@ -61,6 +59,7 @@ export async function appendPaperTradeLog(row: {
   symbol: string;
   side: string;
   qty: number;
+  notional?: number | null;
   submittedAt: string;
 }): Promise<void> {
   await ensureDir();
@@ -69,6 +68,7 @@ export async function appendPaperTradeLog(row: {
     symbol: row.symbol.toUpperCase(),
     side: row.side,
     qty: row.qty,
+    notional: row.notional ?? null,
     submittedAt: row.submittedAt,
     paperOnly: true,
   };

@@ -18,7 +18,21 @@
     "verify:phase6.5": "npx --yes tsx scripts/verify-phase6.5.ts",
     "verify:ai-command": "npx --yes tsx scripts/verify-ai-command.ts",
     "verify:paper-blocks": "npx --yes tsx scripts/verify-paper-blocks.ts",
-    "verify:phase7": "npx --yes tsx scripts/verify-phase7.ts"
+    "verify:phase7": "npx --yes tsx scripts/verify-phase7.ts",
+    "verify:phase8": "npx --yes tsx scripts/verify-phase8.ts",
+    "verify:phase9": "npx --yes tsx scripts/verify-phase9.ts",
+    "verify:phase10": "npx --yes tsx scripts/verify-phase10.ts",
+    "verify:phases-9-15": "npx --yes tsx scripts/verify-phases-9-15.ts",
+    "verify:auto-trade-clarity": "npx --yes tsx scripts/verify-auto-trade-clarity.ts",
+    "verify:universe": "npx --yes tsx scripts/verify-universe.ts",
+    "verify:risk-engine": "npx --yes tsx scripts/verify-risk-engine.ts",
+    "verify:brackets": "npx --yes tsx scripts/verify-brackets.ts",
+    "verify:auto-trade-risk": "npx --yes tsx scripts/verify-auto-trade-risk.ts",
+    "verify:paper-soak": "npx --yes tsx scripts/verify-paper-soak.ts",
+    "verify:runtime-settings": "npx --yes tsx scripts/verify-runtime-settings.ts",
+    "verify:auto-trade-controls": "npx --yes tsx scripts/verify-auto-trade-controls.ts",
+    "verify:auto-trade-modals": "npx --yes tsx scripts/verify-auto-trade-modals.ts",
+    "verify:small-account": "npx --yes tsx scripts/verify-small-account.ts"
   },
   "dependencies": {
     "next": "16.2.10",

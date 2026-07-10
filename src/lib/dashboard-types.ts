@@ -12,6 +12,7 @@ import type {
   DecisionPerformanceEntry,
   PerformanceSummary,
 } from "@/lib/performance/types";
+import type { SmallAccountConfig } from "@/lib/config";
 import type { MarketCondition } from "@/lib/stocks/market-condition";
 
 export type AccountPayload = {
@@ -78,6 +79,8 @@ export type TradeRow = {
   symbol: string;
   side: string;
   type: string;
+  orderMode: "quantity" | "notional";
+  notional: string | null;
   qty: string | null;
   filledQty: string;
   filledAvgPrice: string | null;
@@ -132,4 +135,5 @@ export type DashboardData = {
   error: string | null;
   loadedAt: string;
   orderExecutionEnabled: boolean;
+  smallAccount: SmallAccountConfig;
 };

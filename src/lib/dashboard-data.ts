@@ -20,6 +20,7 @@ import {
 } from "@/lib/alpaca/safety";
 import {
   getAlpacaCredentials,
+  getSmallAccountConfig,
   getWatchlist,
   isPaperOrderExecutionEnabled,
   PAPER_TRADING_BASE_URL,
@@ -28,6 +29,7 @@ import { assessDataQuality } from "@/lib/market/data-quality";
 import { analyzeWatchlistNews } from "@/lib/news/analyze";
 import { fetchWatchlistNews } from "@/lib/news";
 import type { DashboardData } from "@/lib/dashboard-types";
+import { mapAlpacaOrderToTradeRow } from "@/lib/trades/trade-display";
 import {
   fetchMarketCondition,
   fetchMultiTimeframeBars,
@@ -199,21 +201,11 @@ export async function loadDashboardData(): Promise<DashboardData> {
         summary: performanceSummary,
       },
       backtest,
-      trades: orders.map((o) => ({
-        id: o.id,
-        symbol: o.symbol,
-        side: o.side,
-        type: o.type,
-        qty: o.qty,
-        filledQty: o.filled_qty,
-        filledAvgPrice: o.filled_avg_price,
-        status: o.status,
-        submittedAt: o.submitted_at,
-        filledAt: o.filled_at,
-      })),
+      trades: orders.map(mapAlpacaOrderToTradeRow),
       error: null,
       loadedAt: new Date().toISOString(),
       orderExecutionEnabled,
+      smallAccount: getSmallAccountConfig(),
     };
   } catch (error) {
     const message =
@@ -243,6 +235,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
       error: message,
       loadedAt: new Date().toISOString(),
       orderExecutionEnabled: false,
+      smallAccount: getSmallAccountConfig(),
     };
   }
 }

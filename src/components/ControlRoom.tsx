@@ -61,6 +61,7 @@ import { SafetyStrip } from "@/components/ui/SafetyStrip";
 import { DashboardOverview } from "@/components/control-room/DashboardOverview";
 import { WatchlistDetailPanel } from "@/components/control-room/WatchlistDetailPanel";
 import { PaperTradeBlockPanel } from "@/components/trades/PaperTradeBlockPanel";
+import { PaperOrdersTable } from "@/components/trades/PaperOrdersTable";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { SafetyBanner } from "@/components/layout/SafetyBanner";
 import { useUiChrome } from "@/components/layout/UiChromeContext";
@@ -78,14 +79,38 @@ import {
 } from "@/lib/client/watchlist-filters";
 import {
   addLocalWatchlistSymbol,
+  getDefaultNotionalServerSnapshot,
+  getDefaultNotionalSnapshot,
   getDefaultQuantityServerSnapshot,
   getDefaultQuantitySnapshot,
   getLocalWatchlistSymbolsServerSnapshot,
   getLocalWatchlistSymbolsSnapshot,
+  getOrderModeServerSnapshot,
+  getOrderModeSnapshot,
   subscribeUiSettings,
+  type UiOrderMode,
 } from "@/lib/client/ui-settings";
+import type { OrderMode } from "@/lib/config";
 import type { SymbolNewsAnalysis } from "@/lib/news/types";
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
+
+function previewMatchesSelection(
+  preview: PaperOrderPreview,
+  manualSymbol: string,
+  manualSide: "buy" | "sell",
+  orderMode: OrderMode,
+  tradeQty: number,
+  tradeNotional: number,
+): boolean {
+  if (preview.symbol !== manualSymbol || preview.side !== manualSide) {
+    return false;
+  }
+  if (preview.orderMode !== orderMode) return false;
+  if (orderMode === "notional") {
+    return preview.notional === tradeNotional;
+  }
+  return preview.qty === tradeQty;
+}
 
 function trendLabel(d: AiDecision | null | undefined): string {
   const pct = d?.metrics?.trendPct;
@@ -269,13 +294,31 @@ export function ControlRoom({
     getDefaultQuantitySnapshot,
     getDefaultQuantityServerSnapshot,
   );
+  const storedOrderMode = useSyncExternalStore(
+    subscribeUiSettings,
+    getOrderModeSnapshot,
+    getOrderModeServerSnapshot,
+  );
+  const storedDefaultNotional = useSyncExternalStore(
+    subscribeUiSettings,
+    getDefaultNotionalSnapshot,
+    getDefaultNotionalServerSnapshot,
+  );
   const localWatchlist = useSyncExternalStore(
     subscribeUiSettings,
     getLocalWatchlistSymbolsSnapshot,
     getLocalWatchlistSymbolsServerSnapshot,
   );
   const [tradeQtyOverride, setTradeQtyOverride] = useState<number | null>(null);
+  const [orderModeOverride, setOrderModeOverride] = useState<UiOrderMode | null>(
+    null,
+  );
+  const [tradeNotionalOverride, setTradeNotionalOverride] = useState<
+    number | null
+  >(null);
   const tradeQty = tradeQtyOverride ?? storedDefaultQty;
+  const orderMode = orderModeOverride ?? storedOrderMode;
+  const tradeNotional = tradeNotionalOverride ?? storedDefaultNotional;
   const setTradeQty = setTradeQtyOverride;
   const [manualSymbol, setManualSymbol] = useState(
     () => initialData.market?.market[0]?.symbol ?? "",
@@ -292,6 +335,22 @@ export function ControlRoom({
   const [symbolSearch, setSymbolSearch] = useState("");
   const [symbolSearchBusy, setSymbolSearchBusy] = useState(false);
   const [symbolSearchMsg, setSymbolSearchMsg] = useState<string | null>(null);
+  const [candidateResult, setCandidateResult] = useState<{
+    eligible: boolean;
+    reasons: string[];
+    warnings: string[];
+    price: number | null;
+    spreadPercent: number | null;
+    avgDailyVolume: number | null;
+    exchange: string | null;
+  } | null>(null);
+
+  const smallAccount = data.smallAccount;
+  const smallAccountMaxNotional = smallAccount?.maxNotionalPerTrade ?? 25;
+  const notionalAboveSmallAccountCap =
+    smallAccount?.enabled &&
+    orderMode === "notional" &&
+    tradeNotional > smallAccountMaxNotional;
 
   const {
     account,
@@ -352,13 +411,44 @@ export function ControlRoom({
     }
   }
 
-  async function addSymbolFromSearch() {
+  async function addSymbolFromSearch(validateSmallAccount = false) {
     const raw = symbolSearch.trim().toUpperCase();
     if (!raw) return;
     setSymbolSearchBusy(true);
     setSymbolSearchMsg(null);
+    setCandidateResult(null);
     setTradeError(null);
     try {
+      if (validateSmallAccount && smallAccount?.enabled) {
+        const ui = await import("@/lib/client/ui-settings").then((m) =>
+          m.loadUiSettings(),
+        );
+        const cand = await fetchJson<{
+          ok: boolean;
+          candidate?: {
+            eligible: boolean;
+            reasons: string[];
+            warnings: string[];
+            price: number | null;
+            spreadPercent: number | null;
+            avgDailyVolume: number | null;
+            exchange: string | null;
+          };
+          error?: string;
+        }>(
+          `/api/stocks/candidates?symbol=${encodeURIComponent(raw)}&maxPrice=${ui.smallAccountMaxPrice}&minVolume=${ui.smallAccountMinVolume}&maxSpread=${ui.smallAccountMaxSpread}&avoidOtc=${ui.smallAccountAvoidOtc}&majorOnly=${ui.smallAccountMajorOnly}`,
+        );
+        if (cand.candidate) setCandidateResult(cand.candidate);
+        if (!cand.ok || !cand.candidate?.eligible) {
+          setSymbolSearchMsg(
+            cand.candidate?.reasons.join(" ") ??
+              cand.error ??
+              `${raw} did not pass small-account filters.`,
+          );
+          return;
+        }
+      }
+
       const res = await fetchJson<{
         ok: boolean;
         error?: string;
@@ -420,9 +510,38 @@ export function ControlRoom({
   function navigatePrepare(decision: AiDecision) {
     const side = actionToSide(decision.action);
     if (!side) return;
-    router.push(
-      `/trade?symbol=${encodeURIComponent(decision.symbol)}&side=${side}&qty=${tradeQty}`,
-    );
+    const params = new URLSearchParams({
+      symbol: decision.symbol,
+      side,
+      orderMode,
+    });
+    if (orderMode === "notional") {
+      params.set("notional", String(tradeNotional));
+    } else {
+      params.set("qty", String(tradeQty));
+    }
+    router.push(`/trade?${params}`);
+  }
+
+  function buildOrderBody(input: {
+    symbol: string;
+    side: "buy" | "sell";
+    action: AiDecision["action"];
+    riskStatus: string;
+    qty?: number;
+    notional?: number;
+  }) {
+    const mode = orderMode;
+    return {
+      symbol: input.symbol,
+      side: input.side,
+      orderMode: mode,
+      ...(mode === "notional"
+        ? { notional: input.notional ?? tradeNotional }
+        : { qty: input.qty ?? tradeQty }),
+      action: input.action,
+      riskStatus: input.riskStatus,
+    };
   }
 
   async function preparePaperTrade(input: {
@@ -431,8 +550,8 @@ export function ControlRoom({
     action: AiDecision["action"];
     riskStatus: string;
     qty?: number;
+    notional?: number;
   }) {
-    const qty = input.qty ?? tradeQty;
     setTradeError(null);
     setTradeResult(null);
     setApproved(false);
@@ -441,19 +560,14 @@ export function ControlRoom({
       const body = await fetchJson<PaperOrderPreview>("/api/trades/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol: input.symbol,
-          side: input.side,
-          qty,
-          action: input.action,
-          riskStatus: input.riskStatus,
-        }),
+        body: JSON.stringify(buildOrderBody(input)),
       });
       setPreview(body);
       setPreviewStale(false);
       setManualSymbol(body.symbol);
       setManualSide(body.side);
       if (input.qty != null) setTradeQty(body.qty);
+      if (input.notional != null) setTradeNotionalOverride(input.notional);
       requestAnimationFrame(() => {
         document
           .getElementById("paper-trade-approval")
@@ -489,7 +603,11 @@ export function ControlRoom({
     const symbol = searchParams.get("symbol")?.trim().toUpperCase();
     const sideRaw = searchParams.get("side")?.toLowerCase();
     const qtyRaw = searchParams.get("qty");
-    if (!symbol && sideRaw == null && qtyRaw == null) return;
+    const notionalRaw = searchParams.get("notional");
+    const orderModeRaw = searchParams.get("orderMode");
+    if (!symbol && sideRaw == null && qtyRaw == null && notionalRaw == null) {
+      return;
+    }
     tradeParamsApplied.current = true;
 
     const side: "buy" | "sell" =
@@ -497,12 +615,20 @@ export function ControlRoom({
     const qty = qtyRaw
       ? Math.max(1, Math.floor(Number(qtyRaw) || 1))
       : tradeQty;
+    const notional = notionalRaw
+      ? Math.max(1, Number(notionalRaw) || tradeNotional)
+      : tradeNotional;
+    const urlOrderMode: OrderMode =
+      orderModeRaw === "notional" || notionalRaw != null
+        ? "notional"
+        : "quantity";
 
-    // Defer so URL hydration does not setState synchronously in the effect.
     const timer = window.setTimeout(() => {
       if (symbol) setManualSymbol(symbol);
       if (sideRaw === "buy" || sideRaw === "sell") setManualSide(side);
+      setOrderModeOverride(urlOrderMode);
       if (qtyRaw) setTradeQty(qty);
+      if (notionalRaw) setTradeNotionalOverride(notional);
 
       if (symbol) {
         const d = decisions.find((x) => x.symbol === symbol) ?? null;
@@ -513,7 +639,8 @@ export function ControlRoom({
           side,
           action: d && isPreparableAction(d.action) ? d.action : action,
           riskStatus: d?.riskStatus ?? "unknown",
-          qty,
+          qty: urlOrderMode === "quantity" ? qty : undefined,
+          notional: urlOrderMode === "notional" ? notional : undefined,
         });
       }
     }, 0);
@@ -526,9 +653,14 @@ export function ControlRoom({
     if (!preview || !approved) return;
     if (
       previewStale ||
-      preview.symbol !== manualSymbol ||
-      preview.side !== manualSide ||
-      preview.qty !== tradeQty
+      !previewMatchesSelection(
+        preview,
+        manualSymbol,
+        manualSide,
+        orderMode,
+        tradeQty,
+        tradeNotional,
+      )
     ) {
       setTradeError(
         "Preview is out of date. Click Preview paper trade so the selected symbol matches the preview.",
@@ -545,7 +677,10 @@ export function ControlRoom({
         body: JSON.stringify({
           symbol: preview.symbol,
           side: preview.side,
-          qty: preview.qty,
+          orderMode: preview.orderMode,
+          ...(preview.orderMode === "notional"
+            ? { notional: preview.notional }
+            : { qty: preview.qty }),
           action: preview.action,
           riskStatus: preview.riskStatus,
           confirmed: true,
@@ -1135,6 +1270,24 @@ export function ControlRoom({
           />
           <PaperOnlyBanner detail="AI cannot submit · confirm required" />
 
+          {smallAccount?.enabled ? (
+            <div className="mb-4 mt-4 rounded-[var(--radius-sm)] border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-50">
+              <p className="font-semibold">Small Account Mode</p>
+              <p className="mt-1 leading-relaxed">
+                Use <strong>Dollar amount</strong> for fractional paper orders
+                (default ${smallAccount.defaultNotionalAmount}, max $
+                {smallAccount.maxNotionalPerTrade} per trade). Stocks $
+                {smallAccount.minStockPrice}–${smallAccount.maxStockPrice} with
+                liquidity filters.
+              </p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-amber-100/90">
+                {smallAccount.warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
           <div className="mb-5 mt-4 flex flex-col gap-4">
             <div className="grid gap-4 text-base sm:grid-cols-2 lg:grid-cols-4">
               <label className="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-1">
@@ -1191,29 +1344,85 @@ export function ControlRoom({
                 </select>
               </label>
               <label className="flex flex-col gap-1.5">
-                <span className="text-sm text-[var(--muted)]">Quantity</span>
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={tradeQty}
+                <span className="text-sm text-[var(--muted)]">Order sizing</span>
+                <select
+                  value={orderMode}
                   onChange={(e) => {
-                    const next = Math.max(
-                      1,
-                      Math.floor(Number(e.target.value) || 1),
+                    const next = e.target.value as UiOrderMode;
+                    setOrderModeOverride(next);
+                    invalidatePreview(
+                      `Order mode changed to ${next}. Click Preview paper trade again.`,
                     );
-                    setTradeQty(next);
-                    if (preview && preview.qty !== next) {
-                      invalidatePreview(
-                        `Quantity changed to ${next}. Click Preview paper trade again.`,
-                      );
-                      setPreview(null);
-                      setPreviewStale(false);
-                    }
+                    setPreview(null);
+                    setPreviewStale(false);
                   }}
                   className={`${selectClass()} rounded-[var(--radius-sm)]`}
-                />
+                >
+                  <option value="quantity">Shares (quantity)</option>
+                  <option value="notional">Dollar amount (notional)</option>
+                </select>
               </label>
+              {orderMode === "quantity" ? (
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-sm text-[var(--muted)]">Quantity</span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={tradeQty}
+                    onChange={(e) => {
+                      const next = Math.max(
+                        1,
+                        Math.floor(Number(e.target.value) || 1),
+                      );
+                      setTradeQty(next);
+                      if (preview && preview.qty !== next) {
+                        invalidatePreview(
+                          `Quantity changed to ${next}. Click Preview paper trade again.`,
+                        );
+                        setPreview(null);
+                        setPreviewStale(false);
+                      }
+                    }}
+                    className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                  />
+                </label>
+              ) : (
+                <label className="flex flex-col gap-1.5 sm:col-span-2">
+                  <span className="text-sm text-[var(--muted)]">
+                    Dollar amount
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={0.01}
+                    value={tradeNotional}
+                    onChange={(e) => {
+                      const next = Math.max(1, Number(e.target.value) || 1);
+                      setTradeNotionalOverride(next);
+                      if (preview && preview.notional !== next) {
+                        invalidatePreview(
+                          `Dollar amount changed to $${next}. Click Preview paper trade again.`,
+                        );
+                        setPreview(null);
+                        setPreviewStale(false);
+                      }
+                    }}
+                    className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                  />
+                  <span className="text-xs text-amber-100/90">
+                    {manualSymbol
+                      ? `${manualSide === "buy" ? "Buy" : "Sell"} approximately $${tradeNotional.toFixed(2)} of ${manualSymbol}`
+                      : "Select a symbol to preview dollar sizing"}
+                  </span>
+                  {notionalAboveSmallAccountCap ? (
+                    <span className="text-xs text-rose-200">
+                      This is above your small-account trade size (max $
+                      {smallAccountMaxNotional}).
+                    </span>
+                  ) : null}
+                </label>
+              )}
               <div className="flex items-end">
                 <button
                   type="button"
@@ -1227,7 +1436,15 @@ export function ControlRoom({
             </div>
 
             <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-3">
-              <label className="flex flex-col gap-1.5 text-base sm:flex-row sm:items-end sm:gap-3">
+              <p className="text-sm font-semibold text-[var(--foreground)]">
+                Small-stock watchlist builder
+              </p>
+              <p className="mt-1 text-xs text-[var(--muted)]">
+                Search one symbol at a time. With Small Account Mode, validates
+                price, volume, spread, and exchange before suggesting as a
+                candidate. Does not load the full stock universe.
+              </p>
+              <label className="mt-3 flex flex-col gap-1.5 text-base sm:flex-row sm:items-end sm:gap-3">
                 <span className="flex min-w-0 flex-1 flex-col gap-1.5">
                   <span className="text-sm text-[var(--muted)]">
                     Search stock symbol
@@ -1250,17 +1467,58 @@ export function ControlRoom({
                 <button
                   type="button"
                   disabled={symbolSearchBusy || !symbolSearch.trim()}
-                  onClick={() => void addSymbolFromSearch()}
+                  onClick={() => void addSymbolFromSearch(false)}
                   className="ui-btn shrink-0 border border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] disabled:opacity-50"
                 >
                   {symbolSearchBusy ? "Checking…" : "Validate & add"}
                 </button>
+                {smallAccount?.enabled ? (
+                  <button
+                    type="button"
+                    disabled={symbolSearchBusy || !symbolSearch.trim()}
+                    onClick={() => void addSymbolFromSearch(true)}
+                    className="ui-btn shrink-0 border border-amber-500/40 bg-amber-500/10 text-amber-50 disabled:opacity-50"
+                  >
+                    {symbolSearchBusy ? "Checking…" : "Check candidate"}
+                  </button>
+                ) : null}
               </label>
               <p className="mt-2 text-xs text-[var(--muted)]">
                 Validates one symbol via Alpaca paper assets. Adds it to your
-                local watchlist preferences only — does not load the full stock
-                universe.
+                local watchlist preferences only.
               </p>
+              {candidateResult ? (
+                <div
+                  className={`mt-2 rounded-[var(--radius-sm)] border px-3 py-2 text-sm ${
+                    candidateResult.eligible
+                      ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-100"
+                      : "border-amber-500/35 bg-amber-500/10 text-amber-50"
+                  }`}
+                >
+                  <p className="font-medium">
+                    {candidateResult.eligible
+                      ? "Candidate passed filters"
+                      : "Candidate did not pass filters"}
+                  </p>
+                  {candidateResult.price != null ? (
+                    <p className="mt-1 text-xs">
+                      Price ${candidateResult.price.toFixed(2)}
+                      {candidateResult.spreadPercent != null
+                        ? ` · spread ${(candidateResult.spreadPercent * 100).toFixed(2)}%`
+                        : ""}
+                      {candidateResult.avgDailyVolume != null
+                        ? ` · avg vol ${Math.round(candidateResult.avgDailyVolume).toLocaleString()}`
+                        : ""}
+                      {candidateResult.exchange
+                        ? ` · ${candidateResult.exchange}`
+                        : ""}
+                    </p>
+                  ) : null}
+                  {candidateResult.reasons.length > 0 ? (
+                    <p className="mt-1 text-xs">{candidateResult.reasons.join(" ")}</p>
+                  ) : null}
+                </div>
+              ) : null}
               {symbolSearchMsg ? (
                 <p className="mt-2 text-sm text-amber-100/90">{symbolSearchMsg}</p>
               ) : null}
@@ -1289,16 +1547,28 @@ export function ControlRoom({
           {preview ? (
             <div className="paper-preview-enter flex flex-col gap-3 text-base">
               {(previewStale ||
-                preview.symbol !== manualSymbol ||
-                preview.side !== manualSide ||
-                preview.qty !== tradeQty) && (
+                !previewMatchesSelection(
+                  preview,
+                  manualSymbol,
+                  manualSide,
+                  orderMode,
+                  tradeQty,
+                  tradeNotional,
+                )) && (
                 <div className="rounded-[var(--radius-sm)] border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-amber-50">
                   <p className="font-semibold">Preview out of date</p>
                   <p className="mt-1 text-sm leading-relaxed">
-                    Selected controls are {manualSymbol} {manualSide.toUpperCase()}{" "}
-                    × {tradeQty}, but this preview is for {preview.symbol}{" "}
-                    {preview.side.toUpperCase()} × {preview.qty}. Click{" "}
-                    <strong>Preview paper trade</strong> again so they match.
+                    Selected controls are {manualSymbol} {manualSide.toUpperCase()}
+                    {orderMode === "notional"
+                      ? ` · $${tradeNotional}`
+                      : ` × ${tradeQty}`}
+                    , but this preview is for {preview.symbol}{" "}
+                    {preview.side.toUpperCase()}
+                    {preview.orderMode === "notional"
+                      ? ` · $${preview.notional ?? "—"}`
+                      : ` × ${preview.qty}`}
+                    . Click <strong>Preview paper trade</strong> again so they
+                    match.
                   </p>
                 </div>
               )}
@@ -1320,27 +1590,66 @@ export function ControlRoom({
                 <PreviewField label="Side">
                   <ActionBadge action={preview.side} />
                 </PreviewField>
-                <PreviewField label="Quantity">
-                  <div className="tabular-nums font-semibold">
-                    {preview.qty}
-                  </div>
-                </PreviewField>
+                {preview.orderMode === "notional" ? (
+                  <>
+                    <PreviewField label="Dollar amount">
+                      <div className="tabular-nums font-semibold">
+                        {formatMoney(preview.notional, currency)}
+                      </div>
+                    </PreviewField>
+                    <PreviewField label="Estimated shares">
+                      <div className="tabular-nums font-semibold">
+                        {preview.estimatedShares != null
+                          ? `~${preview.estimatedShares.toFixed(4)}`
+                          : "—"}
+                      </div>
+                    </PreviewField>
+                    <PreviewField label="Estimated price">
+                      <div className="tabular-nums">
+                        {formatMoney(preview.estimatedPrice, currency)}
+                      </div>
+                    </PreviewField>
+                    <PreviewField label="Estimated total">
+                      <div className="tabular-nums font-semibold">
+                        {formatMoney(preview.estimatedNotional, currency)}
+                        <span className="ml-1 text-sm font-normal text-[var(--muted)]">
+                          (max {formatMoney(preview.maxNotional, currency)})
+                        </span>
+                      </div>
+                    </PreviewField>
+                    {preview.notional != null &&
+                    smallAccount?.enabled &&
+                    preview.notional > smallAccountMaxNotional ? (
+                      <div className="sm:col-span-2 lg:col-span-3 rounded-[var(--radius-sm)] border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-50">
+                        This is above your small-account trade size.
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <PreviewField label="Quantity (shares)">
+                      <div className="tabular-nums font-semibold">
+                        {preview.qty}
+                      </div>
+                    </PreviewField>
+                    <PreviewField label="Estimated price">
+                      <div className="tabular-nums">
+                        {formatMoney(preview.estimatedPrice, currency)}
+                      </div>
+                    </PreviewField>
+                    <PreviewField label="Estimated total">
+                      <div className="tabular-nums font-semibold">
+                        {formatMoney(preview.estimatedNotional, currency)}
+                        <span className="ml-1 text-sm font-normal text-[var(--muted)]">
+                          (max {formatMoney(preview.maxNotional, currency)})
+                        </span>
+                      </div>
+                    </PreviewField>
+                  </>
+                )}
                 <PreviewField label="Order type">
                   <div className="uppercase">
                     {preview.orderType} / {preview.timeInForce}
-                  </div>
-                </PreviewField>
-                <PreviewField label="Est. price">
-                  <div className="tabular-nums">
-                    {formatMoney(preview.estimatedPrice, currency)}
-                  </div>
-                </PreviewField>
-                <PreviewField label="Est. notional">
-                  <div className="tabular-nums">
-                    {formatMoney(preview.estimatedNotional, currency)}
-                    <span className="ml-1 text-sm text-[var(--muted)]">
-                      (max {formatMoney(preview.maxNotional, currency)})
-                    </span>
                   </div>
                 </PreviewField>
               </div>
@@ -1373,9 +1682,14 @@ export function ControlRoom({
                   canSubmitGates={
                     preview.gates.blockers.length === 0 &&
                     !previewStale &&
-                    preview.symbol === manualSymbol &&
-                    preview.side === manualSide &&
-                    preview.qty === tradeQty
+                    previewMatchesSelection(
+                      preview,
+                      manualSymbol,
+                      manualSide,
+                      orderMode,
+                      tradeQty,
+                      tradeNotional,
+                    )
                   }
                   tradeBusy={tradeBusy}
                   onSubmit={() => void submitPaperTrade()}
@@ -1410,8 +1724,23 @@ export function ControlRoom({
                 Paper order submitted
               </p>
               <p className="mt-1.5 text-sm text-emerald-100/90">
-                {tradeResult.order.side.toUpperCase()} {tradeResult.order.qty}{" "}
-                {tradeResult.order.symbol} · {tradeResult.order.status}
+                {tradeResult.order.side.toUpperCase()}{" "}
+                {tradeResult.preview.orderMode === "notional" ? (
+                  <>
+                    {formatMoney(tradeResult.preview.notional, currency)} of{" "}
+                    {tradeResult.order.symbol}
+                    {tradeResult.order.qty
+                      ? ` · ~${tradeResult.order.qty} shares`
+                      : tradeResult.preview.estimatedShares != null
+                        ? ` · ~${tradeResult.preview.estimatedShares.toFixed(4)} shares`
+                        : ""}
+                  </>
+                ) : (
+                  <>
+                    {tradeResult.order.qty} {tradeResult.order.symbol}
+                  </>
+                )}{" "}
+                · {tradeResult.order.status}
               </p>
             </div>
           )}
@@ -1420,41 +1749,7 @@ export function ControlRoom({
 
       <Panel title="Recent paper orders">
         {trades.length > 0 ? (
-          <ScrollTable minWidthClass="min-w-[28rem] sm:min-w-[36rem]">
-            <table className="w-full text-left text-base">
-              <thead>
-                <tr className="border-b border-[var(--border)] text-sm text-[var(--muted)]">
-                  <th className="py-3 pr-3 font-medium">Time</th>
-                  <th className="py-3 pr-3 font-medium">Symbol</th>
-                  <th className="py-3 pr-3 font-medium">Side</th>
-                  <th className="py-3 pr-3 font-medium">Qty</th>
-                  <th className="py-3 font-medium">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trades.slice(0, 10).map((t) => (
-                  <tr
-                    key={t.id}
-                    className="border-b border-[var(--border)]/50"
-                  >
-                    <td className="py-3 pr-3 text-[var(--muted)]">
-                      {formatTime(t.filledAt ?? t.submittedAt)}
-                    </td>
-                    <td className="py-3 pr-3 text-lg font-semibold">
-                      {t.symbol}
-                    </td>
-                    <td className="py-3 pr-3">
-                      <ActionBadge action={t.side} />
-                    </td>
-                    <td className="py-3 pr-3 tabular-nums">
-                      {t.filledQty || t.qty || "—"}
-                    </td>
-                    <td className="py-3 text-[var(--muted)]">{t.status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </ScrollTable>
+          <PaperOrdersTable trades={trades} limit={10} />
         ) : (
           <EmptyState title="No paper orders yet">
             <p>

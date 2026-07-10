@@ -1,6 +1,8 @@
+import type { SmallAccountConfig } from "@/lib/config";
 import {
   getMaxDailyPaperTrades,
-  getMaxPaperTradeNotional,
+  getMaxNotionalPerTrade,
+  getSmallAccountConfig,
   getWatchlist,
   isPaperOrderExecutionEnabled,
   PAPER_TRADING_BASE_URL,
@@ -18,6 +20,7 @@ export type AppSettingsView = {
   watchlistEnv: string;
   maxTradeAmount: number;
   maxDailyPaperTrades: number;
+  smallAccount: SmallAccountConfig;
   /** Display default; decisions use engine thresholds. */
   minConfidenceDefault: number;
   maxSpreadAllowed: number;
@@ -61,8 +64,9 @@ export function getAppSettingsView(): AppSettingsView {
     assetClass: "us_equity",
     watchlist: getWatchlist(),
     watchlistEnv: process.env.WATCHLIST ?? "AAPL,MSFT,GOOGL,AMZN,NVDA",
-    maxTradeAmount: getMaxPaperTradeNotional(),
+    maxTradeAmount: getMaxNotionalPerTrade(),
     maxDailyPaperTrades: getMaxDailyPaperTrades(),
+    smallAccount: getSmallAccountConfig(),
     minConfidenceDefault: 0.45,
     maxSpreadAllowed: WIDE_SPREAD_HOLD_PCT,
     orderExecutionEnabled: execution,

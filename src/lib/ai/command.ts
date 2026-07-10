@@ -1,8 +1,12 @@
 import { getAiProviderName, getOllamaConfig } from "@/lib/ai/provider";
 import {
+  getDefaultNotionalAmount,
+  getMaxStockPrice,
   isGeneralAiModeEnabled,
   isPaperOrderExecutionEnabled,
+  isSmallAccountMode,
 } from "@/lib/config";
+import { SMALL_ACCOUNT_WARNINGS } from "@/lib/stocks/small-account";
 import type {
   AiCommandDecisionContext,
   AiCommandRequest,
@@ -464,6 +468,38 @@ function heuristicAnswer(input: AiCommandRequest): AiCommandResponse {
       answer = isGeneralAiModeEnabled()
         ? `${OUT_OF_SCOPE_ANSWER} (GENERAL_AI_MODE is on, but this desk still prioritizes trading help.)`
         : OUT_OF_SCOPE_ANSWER;
+      break;
+    }
+    case "small_account": {
+      suggestedAction = "analyze";
+      const maxPrice = getMaxStockPrice();
+      const defaultNotional = getDefaultNotionalAmount();
+      const affordable = decisions.filter(
+        (d) =>
+          d.lastPrice != null &&
+          d.lastPrice <= maxPrice &&
+          d.lastPrice >= 2,
+      );
+      const safest = [...affordable]
+        .filter((d) => d.readyForManualPaperTrade)
+        .sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0))[0];
+      relatedSymbols = affordable.slice(0, 8).map((d) => d.symbol);
+      answer = [
+        isSmallAccountMode()
+          ? "Small Account Mode is ON — paper trades can use dollar amounts (notional) for fractional shares."
+          : "Small Account Mode is OFF in server config, but I can still filter by price and quality.",
+        `Default paper size: ~$${defaultNotional.toFixed(2)} (notional) · max price cap $${maxPrice}.`,
+        affordable.length
+          ? `Under $${maxPrice}: ${affordable.map((d) => `${d.symbol} ($${d.lastPrice?.toFixed(2) ?? "—"})`).join(", ")}.`
+          : `No watchlist names under $${maxPrice} with loaded quotes.`,
+        safest
+          ? `Safest-looking under cap today: ${safest.symbol} (${safest.action}, ${pct(safest.confidence)} conf).`
+          : "No under-cap name is fully ready for manual paper trade right now.",
+        SMALL_ACCOUNT_WARNINGS.join(" "),
+        `Recommend $5–$10 paper test sizes (notional) — default $${defaultNotional.toFixed(0)}. Avoid buying 1 full share of expensive names; use dollar amount mode instead. Only use $50 if you intentionally raise the amount.`,
+      ]
+        .filter(Boolean)
+        .join(" ");
       break;
     }
     case "analyze_watchlist":

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { useMonitorStream } from "@/components/layout/MonitorStreamContext";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { formatTime } from "@/lib/format";
 import {
@@ -17,6 +18,7 @@ import type {
 } from "@/lib/monitor/types";
 import { Panel } from "@/components/ui/Panel";
 import { StatusDot } from "@/components/ui/SafetyStrip";
+import { AgentLiveStatus } from "@/components/monitor/AgentLiveStatus";
 
 type MonitorApi = MonitorStatus & {
   ok?: boolean;
@@ -34,40 +36,35 @@ function statusTone(
 }
 
 export function MonitoringPanel() {
-  const [status, setStatus] = useState<MonitorStatus | null>(null);
+  const stream = useMonitorStream();
+  const [localStatus, setLocalStatus] = useState<MonitorStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
 
-  const refresh = useCallback(async () => {
-    try {
-      const next = await fetchJson<MonitorStatus>("/api/monitor");
-      setStatus(next);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load monitor");
-    }
-  }, []);
+  const status = stream.status ?? localStatus;
 
   useEffect(() => {
+    if (stream.status || localStatus) return;
     let cancelled = false;
-    const load = () => {
-      void refresh().finally(() => {
-        /* refresh owns setState */
-      });
-    };
-    const boot = window.setTimeout(() => {
-      if (!cancelled) load();
+    const id = window.setTimeout(() => {
+      void fetchJson<MonitorStatus>("/api/monitor")
+        .then((next) => {
+          if (!cancelled) setLocalStatus(next);
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setError(
+              err instanceof Error ? err.message : "Failed to load monitor",
+            );
+          }
+        });
     }, 0);
-    const id = window.setInterval(() => {
-      if (!cancelled) load();
-    }, 15_000);
     return () => {
       cancelled = true;
-      window.clearTimeout(boot);
-      window.clearInterval(id);
+      window.clearTimeout(id);
     };
-  }, [refresh]);
+  }, [stream.status, localStatus]);
 
   async function postAction(path: string) {
     setBusy(true);
@@ -75,14 +72,13 @@ export function MonitoringPanel() {
     try {
       const res = await fetchJson<MonitorApi>(path, { method: "POST" });
       if (res.error && !res.ok) setError(res.error);
-      setStatus((prev) => ({
+      setLocalStatus((prev) => ({
         ...(prev ?? emptyStatus()),
         ...res,
         paperOnly: true,
         canPlaceOrders: false,
-        automaticTradingAllowed: false,
       }));
-      await refresh();
+      stream.reconnect();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Monitor action failed");
     } finally {
@@ -101,9 +97,32 @@ export function MonitoringPanel() {
     <div id="monitor" className="scroll-mt-24">
       <Panel title="24/7 AI Monitoring Agent">
         <p className="mb-3 text-sm text-[var(--muted)]">
-          Continuously scans your watchlist for setups. Paper-only — monitoring
-          never places orders.
+          Background worker scans your watchlist (SSE live updates — no page
+          refresh). Paper-only — monitoring never places orders directly.
         </p>
+
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 ring-1 ${
+              stream.connected
+                ? "ring-emerald-500/40 text-emerald-100"
+                : "ring-[var(--border)]"
+            }`}
+          >
+            <StatusDot tone={stream.connected ? "ok" : "bad"} />
+            SSE {stream.connected ? "connected" : "reconnecting…"}
+          </span>
+          {stream.heartbeatAt ? (
+            <span>Heartbeat {formatTime(stream.heartbeatAt)}</span>
+          ) : null}
+          {status?.workerMode ? (
+            <span className="text-amber-100/90">Background worker</span>
+          ) : null}
+        </div>
+
+        <div className="mb-4">
+          <AgentLiveStatus />
+        </div>
 
         <MonitorNotifications notifications={notifications} />
 
@@ -136,9 +155,11 @@ export function MonitoringPanel() {
           <Stat
             label="Interval"
             value={
-              status
-                ? `${Math.round(status.intervalMs / 60000)} min`
-                : "5 min"
+              !status
+                ? "—"
+                : status.marketOpen
+                  ? `${Math.round((status.intervalOpenMs ?? status.intervalMs) / 1000)}s (open)`
+                  : `${Math.round((status.intervalClosedMs ?? status.intervalMs) / 60000)}m (closed)`
             }
           />
           <Stat
@@ -212,7 +233,12 @@ export function MonitoringPanel() {
           </p>
         ) : null}
 
-        <TopOpportunityCard opportunity={top} />
+        <TopOpportunityCard
+          opportunity={top}
+          stocksScanned={
+            status?.stocksScanned || status?.scannedSymbols?.length || 0
+          }
+        />
 
         <p className="mt-3 text-xs leading-relaxed text-[var(--muted)]">
           The agent can detect setups 24/7, but stock orders are only allowed
@@ -246,9 +272,11 @@ function emptyStatus(): MonitorStatus {
     lastScanAt: null,
     nextScanAt: null,
     stocksScanned: 0,
+    scannedSymbols: [],
     opportunitiesFound: 0,
     activeOpportunities: 0,
     topOpportunity: null,
+    topSignalLabel: "No scan yet",
     lastError: null,
     ollamaAvailable: null,
     notifications: [],
@@ -305,8 +333,10 @@ export function MonitorNotifications({
 
 function TopOpportunityCard({
   opportunity,
+  stocksScanned,
 }: {
   opportunity: MonitorOpportunity | null;
+  stocksScanned?: number;
 }) {
   if (!opportunity) {
     return (
@@ -333,6 +363,9 @@ function TopOpportunityCard({
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="text-sm font-semibold text-[var(--muted)]">
           Top signal
+          {stocksScanned && stocksScanned > 0
+            ? ` from ${stocksScanned} scanned`
+            : ""}
         </h3>
         <span className="text-xs text-[var(--muted)]">
           {formatTime(opportunity.timestamp)} · expires{" "}

@@ -14,6 +14,17 @@ export type AlpacaAccount = {
   account_blocked: boolean;
 };
 
+export type AlpacaPosition = {
+  asset_id: string;
+  symbol: string;
+  qty: string;
+  side: string;
+  market_value: string;
+  avg_entry_price: string;
+  current_price: string;
+  unrealized_pl: string;
+};
+
 export type AlpacaBar = {
   t: string;
   o: number;
@@ -46,6 +57,7 @@ export type AlpacaOrder = {
   symbol: string;
   asset_class: string;
   qty: string | null;
+  notional?: string | null;
   filled_qty: string;
   filled_avg_price: string | null;
   order_class: string;
@@ -96,11 +108,16 @@ export type MarketConditionLabel =
   | "choppy"
   | "unclear";
 
+export type DecisionLabel = "BUY" | "SELL" | "HOLD" | "WATCH" | "SKIP";
+
 export type DecisionScores = {
   technicalScore: number;
   newsScore: number;
   marketScore: number;
   riskScore: number;
+  liquidityScore: number;
+  volumeScore: number;
+  momentumScore: number;
   finalScore: number;
   confidence: number;
 };
@@ -132,6 +149,8 @@ export type SymbolMarketSnapshot = {
 export type AiDecision = {
   symbol: string;
   action: AiAction;
+  /** Phase 11 — BUY | SELL | HOLD | WATCH | SKIP for display and training. */
+  decisionLabel?: DecisionLabel;
   confidence: number;
   reasons: string[];
   riskWarnings: string[];

@@ -1,14 +1,20 @@
 import type { AiAction, DataQuality, RiskStatus } from "@/lib/alpaca/types";
 import { WIDE_SPREAD_HOLD_PCT } from "@/lib/market/data-quality";
 import type { MarketCondition } from "@/lib/stocks/market-condition";
+import { getStrategyConfig } from "@/lib/strategy/version";
 import type { StockTechnicalAnalysis } from "@/lib/stocks/technicals";
 import type { SymbolNewsAnalysis } from "@/lib/news/types";
+
+export type DecisionLabel = "BUY" | "SELL" | "HOLD" | "WATCH" | "SKIP";
 
 export type DecisionScores = {
   technicalScore: number;
   newsScore: number;
   marketScore: number;
   riskScore: number;
+  liquidityScore: number;
+  volumeScore: number;
+  momentumScore: number;
   finalScore: number;
   confidence: number;
 };
@@ -119,19 +125,63 @@ export function assessStockRisk(input: {
   return { level, riskStatus, reasons, riskScore };
 }
 
+export function volumeToScore(volumeRatio: number | null): number {
+  if (volumeRatio == null) return 0.45;
+  if (volumeRatio >= 1.4) return 0.88;
+  if (volumeRatio >= 1.0) return 0.72;
+  if (volumeRatio >= 0.75) return 0.58;
+  if (volumeRatio >= 0.5) return 0.42;
+  return 0.25;
+}
+
+export function momentumToScore(technicalLean: number): number {
+  const abs = Math.abs(technicalLean);
+  if (abs >= 2.2) return 0.9;
+  if (abs >= 1.6) return 0.78;
+  if (abs >= 1.0) return 0.62;
+  if (abs >= 0.5) return 0.48;
+  return 0.35;
+}
+
+export function liquidityToScore(
+  spreadPercent: number | null,
+  volumeRatio: number | null,
+): number {
+  let score = 0.55;
+  if (spreadPercent != null) {
+    if (spreadPercent <= 0.003) score += 0.25;
+    else if (spreadPercent <= 0.006) score += 0.12;
+    else if (spreadPercent >= WIDE_SPREAD_HOLD_PCT) score -= 0.35;
+    else if (spreadPercent >= 0.01) score -= 0.2;
+  } else {
+    score -= 0.15;
+  }
+  if (volumeRatio != null && volumeRatio >= 1.0) score += 0.1;
+  return Number(Math.min(0.95, Math.max(0.05, score)).toFixed(3));
+}
+
 export function buildDecisionScores(input: {
   technicalScore: number;
   newsScore: number;
   marketScore: number;
   riskScore: number;
+  volumeScore?: number;
+  momentumScore?: number;
+  liquidityScore?: number;
 }): DecisionScores {
   const { technicalScore, newsScore, marketScore, riskScore } = input;
-  // Risk acts as a soft multiplier; technical + market dominate.
+  const volumeScore = input.volumeScore ?? 0.5;
+  const momentumScore = input.momentumScore ?? 0.5;
+  const liquidityScore = input.liquidityScore ?? 0.5;
+  const w = getStrategyConfig().weights;
   const blended =
-    technicalScore * 0.4 +
-    marketScore * 0.25 +
-    newsScore * 0.15 +
-    riskScore * 0.2;
+    technicalScore * w.technical +
+    marketScore * w.market +
+    newsScore * w.news +
+    riskScore * w.risk +
+    volumeScore * w.volume +
+    momentumScore * w.momentum +
+    liquidityScore * w.liquidity;
   const finalScore = Number(
     Math.min(0.95, Math.max(0.05, blended * (0.7 + 0.3 * riskScore))).toFixed(
       3,
@@ -147,9 +197,35 @@ export function buildDecisionScores(input: {
     newsScore,
     marketScore,
     riskScore,
+    liquidityScore,
+    volumeScore,
+    momentumScore,
     finalScore,
     confidence,
   };
+}
+
+/** Phase 11 — human-facing label including WATCH/SKIP. */
+export function chooseDecisionLabel(input: {
+  action: AiAction;
+  blockReasons: string[];
+  technicalLean: number;
+  finalScore: number;
+  smallAccountBlocked?: boolean;
+}): DecisionLabel {
+  const hardSkip = input.blockReasons.some((r) =>
+    /closed|stale|wide|high risk|spread/i.test(r),
+  );
+  if (hardSkip || input.smallAccountBlocked) return "SKIP";
+  if (input.action === "BUY") return "BUY";
+  if (input.action === "SELL") return "SELL";
+  const lean = Math.abs(input.technicalLean);
+  const nearEdge =
+    lean >= 1.0 ||
+    input.finalScore >= 0.54 ||
+    input.finalScore <= 0.46;
+  if (nearEdge && input.blockReasons.length > 0) return "WATCH";
+  return "HOLD";
 }
 
 export function buildExplanation(input: {

@@ -1,4 +1,5 @@
 import type { AiAction, DataQuality, RiskStatus } from "@/lib/alpaca/types";
+import type { OrderMode } from "@/lib/config";
 import { WIDE_SPREAD_HOLD_PCT } from "@/lib/market/data-quality";
 import type {
   OrderGateBlocker,
@@ -13,7 +14,9 @@ export type EvaluateOrderGatesInput = {
   side: PaperOrderSide;
   riskStatus: RiskStatus;
   dataQuality: DataQuality;
+  orderMode: OrderMode;
   qty: number;
+  notional: number | null;
   estimatedPrice: number | null;
   maxNotional: number;
   dailyTradeCount: number;
@@ -106,7 +109,24 @@ export function evaluateOrderGates(
     });
   }
 
-  if (!(input.qty > 0) || !Number.isFinite(input.qty) || !Number.isInteger(input.qty)) {
+  if (input.orderMode === "notional") {
+    const notional = input.notional;
+    if (notional == null || !(notional > 0) || !Number.isFinite(notional)) {
+      blockers.push({
+        code: "invalid_notional",
+        message: "Notional dollar amount must be a positive number.",
+      });
+    } else if (notional > input.maxNotional) {
+      blockers.push({
+        code: "max_notional",
+        message: `Notional $${notional.toFixed(2)} exceeds max $${input.maxNotional.toFixed(2)} per trade.`,
+      });
+    }
+  } else if (
+    !(input.qty > 0) ||
+    !Number.isFinite(input.qty) ||
+    !Number.isInteger(input.qty)
+  ) {
     blockers.push({
       code: "invalid_qty",
       message: "Quantity must be a positive whole number.",
@@ -118,7 +138,7 @@ export function evaluateOrderGates(
       code: "missing_price",
       message: "Cannot estimate order price from current quote/bar.",
     });
-  } else {
+  } else if (input.orderMode === "quantity") {
     const notional = input.estimatedPrice * input.qty;
     if (notional > input.maxNotional) {
       blockers.push({

@@ -1,24 +1,39 @@
 /**
- * Monitor safety — monitoring must never place orders.
+ * Monitor safety — paper only. Auto trading uses a separate module.
  */
 
-import { isPaperOrderExecutionEnabled, PAPER_TRADING_BASE_URL } from "@/lib/config";
+import {
+  isAutoPaperTradingEnabled,
+  isPaperOrderExecutionEnabled,
+  PAPER_TRADING_BASE_URL,
+} from "@/lib/config";
 import {
   assertPaperTradingOnly,
   PaperTradingSafetyError,
 } from "@/lib/alpaca/safety";
+import { isAutoTradeRuntimeBlocked } from "@/lib/auto-trade/runtime";
 
-/** Hard guarantees for Phase 7 monitor responses. */
+/** Hard guarantees for monitor / auto-trade responses. */
 export function monitorSafetyFlags() {
+  const autoEnv = isAutoPaperTradingEnabled();
   return {
     paperOnly: true as const,
     canPlaceOrders: false as const,
-    automaticTradingAllowed: false as const,
+    /** True only when auto env + execution enabled and runtime not killed. */
+    automaticTradingAllowed: autoEnv && isPaperOrderExecutionEnabled(),
     liveTradingAllowed: false as const,
     orderExecutionEnabled: isPaperOrderExecutionEnabled(),
-    /** Monitor itself never submits — even if paper execution env is on. */
+    autoPaperTradingEnvEnabled: autoEnv,
+    /** Monitor scanner delegates orders to auto-trade module when enabled. */
     monitorPlacesOrders: false as const,
   };
+}
+
+export async function getEffectiveAutoTradingAllowed(): Promise<boolean> {
+  if (!isAutoPaperTradingEnabled() || !isPaperOrderExecutionEnabled()) {
+    return false;
+  }
+  return !(await isAutoTradeRuntimeBlocked());
 }
 
 export function assertMonitorPaperOnly(): void {
@@ -26,15 +41,14 @@ export function assertMonitorPaperOnly(): void {
 }
 
 /**
- * Explicit guard: monitor code paths must not call order placement.
- * Throws if somehow invoked with a live trading URL context.
+ * Legacy guard — blocks unsupported MONITOR_ALLOW_AUTO_ORDERS bypass.
+ * Auto trading must use AUTO_PAPER_TRADING_ENABLED + auto-trade module.
  */
 export function assertMonitorCannotTrade(): void {
   assertPaperTradingOnly(PAPER_TRADING_BASE_URL);
-  // Defense in depth — monitor never enables auto-submit.
   if (process.env.MONITOR_ALLOW_AUTO_ORDERS === "true") {
     throw new PaperTradingSafetyError(
-      "MONITOR_ALLOW_AUTO_ORDERS is not supported. Phase 7 is monitoring only.",
+      "MONITOR_ALLOW_AUTO_ORDERS is not supported. Use AUTO_PAPER_TRADING_ENABLED with the auto-trade module.",
     );
   }
 }

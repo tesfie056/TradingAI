@@ -25,6 +25,7 @@ export type QuickPromptKind =
   | "highest_confidence"
   | "market_news_risk"
   | "prepare_preview"
+  | "small_account"
   | "compare"
   | "explain_symbol"
   | "watch_open"
@@ -35,6 +36,11 @@ export type QuickPromptKind =
   | "generic";
 
 export type HistoricalField = "high" | "low" | "open" | "close" | "all";
+
+const SMALL_ACCOUNT_RE =
+  /\b(small account|low[- ]priced|under \$?\d+|penny stock|fractional|notional|\$\d+\s+paper|dollar amount|cheaper stock|low priced|safest today)\b/i;
+
+const PRICE_CAP_RE = /(?:under|below|less than)\s+\$?\s*(\d+)/i;
 
 const TRADE_EXEC_RE =
   /\b(buy|sell|purchase|short|long|place\s+order|submit\s+order|execute(\s+trade)?|send\s+order)\b/i;
@@ -189,6 +195,10 @@ export function classifyIntent(
 
   if (isAppScopeQuestion(instruction)) return "app_scope_question";
 
+  if (SMALL_ACCOUNT_RE.test(lower) || PRICE_CAP_RE.test(lower)) {
+    return "watchlist_analysis";
+  }
+
   if (isHistoricalFollowUp(instruction, conversation)) {
     return "historical_price_question";
   }
@@ -295,6 +305,13 @@ export function intentToQuickPrompt(
     case "risk_question":
       return "market_news_risk";
     case "watchlist_analysis":
+      if (
+        SMALL_ACCOUNT_RE.test(lower) ||
+        PRICE_CAP_RE.test(lower) ||
+        /penny stock|fractional|notional|\$\d+/i.test(lower)
+      ) {
+        return "small_account";
+      }
       if (/highest confidence|best setup|find highest/i.test(lower)) {
         return "highest_confidence";
       }

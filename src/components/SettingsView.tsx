@@ -355,6 +355,41 @@ export function SettingsView() {
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs uppercase text-[var(--muted)]">
+              Default order mode
+            </span>
+            <select
+              value={ui.orderMode}
+              onChange={(e) =>
+                patchUi({
+                  orderMode:
+                    e.target.value === "quantity" ? "quantity" : "notional",
+                })
+              }
+              className={inputClass}
+            >
+              <option value="quantity">Shares (quantity)</option>
+              <option value="notional">Dollar amount (notional)</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs uppercase text-[var(--muted)]">
+              Default dollar amount
+            </span>
+            <input
+              type="number"
+              min={1}
+              step={0.01}
+              value={ui.defaultNotional}
+              onChange={(e) =>
+                patchUi({
+                  defaultNotional: Math.max(1, Number(e.target.value) || 10),
+                })
+              }
+              className={inputClass}
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs uppercase text-[var(--muted)]">
               Minimum confidence for trade preview
             </span>
             <input
@@ -414,7 +449,10 @@ export function SettingsView() {
               className={inputClass}
             />
             <span className="text-xs text-[var(--muted)]">
-              Server: MAX_PAPER_TRADE_NOTIONAL={server?.maxTradeAmount ?? "—"}
+              Server: MAX_NOTIONAL_PER_TRADE={server?.maxTradeAmount ?? "—"}
+              {server?.smallAccount?.enabled
+                ? ` · Small Account Mode ON`
+                : ""}
             </span>
           </label>
           <label className="flex flex-col gap-1">
@@ -440,6 +478,68 @@ export function SettingsView() {
               {server?.maxDailyPaperTrades ?? "—"}
             </span>
           </label>
+          {server?.smallAccount?.enabled ? (
+            <>
+              <label className="flex flex-col gap-1 sm:col-span-2">
+                <span className="text-xs uppercase text-[var(--muted)]">
+                  Small-account max price ($)
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  value={ui.smallAccountMaxPrice}
+                  onChange={(e) =>
+                    patchUi({
+                      smallAccountMaxPrice: Math.max(
+                        1,
+                        Number(e.target.value) || 50,
+                      ),
+                    })
+                  }
+                  className={inputClass}
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs uppercase text-[var(--muted)]">
+                  Min avg daily volume
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  value={ui.smallAccountMinVolume}
+                  onChange={(e) =>
+                    patchUi({
+                      smallAccountMinVolume: Math.max(
+                        0,
+                        Math.floor(Number(e.target.value) || 0),
+                      ),
+                    })
+                  }
+                  className={inputClass}
+                />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs uppercase text-[var(--muted)]">
+                  Max spread (%)
+                </span>
+                <input
+                  type="number"
+                  min={0.01}
+                  step={0.05}
+                  value={ui.smallAccountMaxSpread}
+                  onChange={(e) =>
+                    patchUi({
+                      smallAccountMaxSpread: Math.max(
+                        0.01,
+                        Number(e.target.value) || 0.5,
+                      ),
+                    })
+                  }
+                  className={inputClass}
+                />
+              </label>
+            </>
+          ) : null}
           <fieldset className="flex flex-col gap-2">
             <legend className="text-xs uppercase text-[var(--muted)]">
               Risk level allowed

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getOrders } from "@/lib/alpaca/client";
 import { PaperTradingSafetyError } from "@/lib/alpaca/safety";
 import { isPaperOrderExecutionEnabled } from "@/lib/config";
+import { mapAlpacaOrderToTradeRow } from "@/lib/trades/trade-display";
 
 export const dynamic = "force-dynamic";
 
@@ -12,19 +13,7 @@ export async function GET() {
       paperOnly: true,
       orderExecutionEnabled: isPaperOrderExecutionEnabled(),
       liveTradingAllowed: false,
-      trades: orders.map((o) => ({
-        id: o.id,
-        symbol: o.symbol,
-        side: o.side,
-        type: o.type,
-        qty: o.qty,
-        filledQty: o.filled_qty,
-        filledAvgPrice: o.filled_avg_price,
-        status: o.status,
-        submittedAt: o.submitted_at,
-        filledAt: o.filled_at,
-        limitPrice: o.limit_price,
-      })),
+      trades: orders.map(mapAlpacaOrderToTradeRow),
     });
   } catch (error) {
     const message =

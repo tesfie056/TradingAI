@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getMonitorStatus } from "@/lib/monitor/service";
+import { ensureMonitorWorkerRunning } from "@/lib/monitor/worker";
 import { monitorSafetyFlags } from "@/lib/monitor/safety";
 import { PaperTradingSafetyError } from "@/lib/alpaca/safety";
 
@@ -8,6 +9,7 @@ export const dynamic = "force-dynamic";
 /** GET monitor agent status — never places orders. */
 export async function GET() {
   try {
+    await ensureMonitorWorkerRunning();
     const status = await getMonitorStatus();
     return NextResponse.json(status);
   } catch (error) {

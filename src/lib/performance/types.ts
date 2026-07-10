@@ -77,6 +77,7 @@ export type BacktestResult = {
   paperOnly: true;
   orderExecutionEnabled: false;
   liveTradingAllowed: false;
+  strategyVersion: string;
   symbols: string[];
   timeframe: "5Min" | "15Min" | "1Hour";
   barsUsed: number;

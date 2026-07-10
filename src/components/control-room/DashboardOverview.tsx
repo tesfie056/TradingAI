@@ -4,6 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { PageHeader, PageLinkButton } from "@/components/layout/PageHeader";
 import { SafetyBanner } from "@/components/layout/SafetyBanner";
+import { useUiChrome } from "@/components/layout/UiChromeContext";
 import { Panel } from "@/components/ui/Panel";
 import { ActionBadge, ConfidenceBar } from "@/components/ui/badges";
 import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
@@ -126,6 +127,7 @@ export function DashboardOverview({
   }, [loadedAt]);
 
   const aiLabel = aiStatusDisplayLabel(aiHealth?.statusLabel);
+  const { openAi } = useUiChrome();
 
   return (
     <div className="flex flex-col gap-6">
@@ -134,9 +136,13 @@ export function DashboardOverview({
         description="A calm paper-trading desk for U.S. stocks. AI can explain and suggest — you always confirm."
         actions={
           <>
-            <PageLinkButton href="/assistant" tone="accent">
+            <button
+              type="button"
+              onClick={() => openAi()}
+              className="ui-btn border border-amber-500/45 bg-amber-500/15 text-amber-50"
+            >
               Ask AI
-            </PageLinkButton>
+            </button>
             <PageLinkButton href="/watchlist">Watchlist</PageLinkButton>
             <PageLinkButton href="/monitor">Monitor</PageLinkButton>
             <PageLinkButton href="/trade">Trade</PageLinkButton>

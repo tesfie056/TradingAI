@@ -7,6 +7,12 @@ import {
   UiChromeProvider,
   useUiChrome,
 } from "@/components/layout/UiChromeContext";
+import {
+  MonitorStreamProvider,
+  useMonitorStream,
+} from "@/components/layout/MonitorStreamContext";
+import { AiAssistantPopup } from "@/components/AiAssistantPopup";
+import { ToastProvider } from "@/components/ui/Toast";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { aiStatusDisplayLabel } from "@/lib/client/block-reasons";
 import type {
@@ -36,7 +42,9 @@ const FALLBACK: ShellStatus = {
 
 function AppShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { viewMode, toggleViewMode } = useUiChrome();
+  const { viewMode, toggleViewMode, openAi, aiIndicator, aiOpen } =
+    useUiChrome();
+  const monitor = useMonitorStream();
   const [status, setStatus] = useState<ShellStatus>(FALLBACK);
 
   useEffect(() => {
@@ -81,22 +89,32 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
     };
   }, [pathname]);
 
+  const shellMarketOpen = monitor.marketOpen ?? status.marketOpen;
+
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <StatusBar
         paperOnly
         orderExecutionEnabled={status.orderExecutionEnabled}
-        marketOpen={status.marketOpen}
+        marketOpen={shellMarketOpen}
         aiProvider={status.aiProvider}
         newsProvider={status.newsProvider}
         safetyOk={status.safetyOk}
         safetyLabel={status.safetyLabel}
         viewMode={viewMode}
         onToggleViewMode={toggleViewMode}
+        onAskAi={() => openAi()}
+        aiThinking={!aiOpen && aiIndicator.thinking}
+        aiResultsReady={!aiOpen ? aiIndicator.resultsReady : 0}
+        agentConnected={monitor.connected}
+        agentHeartbeatAt={monitor.heartbeatAt}
+        agentRunning={monitor.workerRunning}
+        agentScanning={monitor.scanning}
       />
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
         {children}
       </main>
+      <AiAssistantPopup />
     </div>
   );
 }
@@ -104,7 +122,11 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <UiChromeProvider>
-      <AppShellInner>{children}</AppShellInner>
+      <MonitorStreamProvider>
+        <ToastProvider>
+          <AppShellInner>{children}</AppShellInner>
+        </ToastProvider>
+      </MonitorStreamProvider>
     </UiChromeProvider>
   );
 }

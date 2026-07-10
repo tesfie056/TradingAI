@@ -1,4 +1,5 @@
 import type { AiAction, RiskStatus } from "@/lib/alpaca/types";
+import type { OrderMode } from "@/lib/config";
 
 export type OrderGateCode =
   | "execution_disabled"
@@ -10,6 +11,7 @@ export type OrderGateCode =
   | "hold_decision"
   | "invalid_side"
   | "invalid_qty"
+  | "invalid_notional"
   | "max_notional"
   | "max_daily_trades"
   | "missing_approval"
@@ -31,7 +33,9 @@ export type PaperOrderSide = "buy" | "sell";
 export type PaperOrderPreviewRequest = {
   symbol: string;
   side: PaperOrderSide;
-  qty: number;
+  orderMode: OrderMode;
+  qty?: number;
+  notional?: number;
   /** Optional AI action context; HOLD always blocks. */
   action?: AiAction;
   riskStatus?: RiskStatus;
@@ -42,7 +46,12 @@ export type PaperOrderPreview = {
   warning: "PAPER TRADE ONLY";
   symbol: string;
   side: PaperOrderSide;
+  orderMode: OrderMode;
   qty: number;
+  /** Dollar amount for notional orders; null for pure quantity mode. */
+  notional: number | null;
+  /** Implied fractional shares when orderMode is notional. */
+  estimatedShares: number | null;
   orderType: "market";
   timeInForce: "day";
   estimatedPrice: number | null;
@@ -56,12 +65,16 @@ export type PaperOrderPreview = {
   gates: OrderGateResult;
   canPrepare: boolean;
   canSubmit: boolean;
+  smallAccountMode: boolean;
+  smallAccountWarnings: string[];
 };
 
 export type PaperOrderSubmitRequest = {
   symbol: string;
   side: PaperOrderSide;
-  qty: number;
+  orderMode: OrderMode;
+  qty?: number;
+  notional?: number;
   action?: AiAction;
   riskStatus?: RiskStatus;
   /** Must be true — manual confirmation required. */
@@ -79,6 +92,7 @@ export type PaperOrderSubmitResult = {
     side: string;
     type: string;
     qty: string | null;
+    notional: string | null;
     status: string;
     submittedAt: string;
     filledAvgPrice: string | null;

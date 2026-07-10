@@ -1,9 +1,13 @@
+import { filterUsStockSymbols } from "@/lib/stocks/universe";
+
 /**
  * Client-only UI preferences (localStorage).
  * Server safety gates still use env — this never enables live trading.
  */
 
 export type UiViewMode = "simple" | "advanced";
+export type UiCardDensity = "compact" | "comfortable";
+export type UiMaxRiskAllowed = "low" | "medium";
 
 export type UiSettings = {
   watchlistDraft: string;
@@ -17,6 +21,14 @@ export type UiSettings = {
   defaultQuantity: number;
   /** Compact score badges vs fuller labels. */
   compactScores: boolean;
+  /** Compact cards vs comfortable spacing. */
+  cardDensity: UiCardDensity;
+  /** Show detailed score breakdowns in watchlist/trade UI. */
+  showScoreDetails: boolean;
+  /** Show detailed blocked-reason copy. */
+  showBlockedReasonDetails: boolean;
+  /** UI preference: only surface Low/Medium risk as “allowed” for preview hints. */
+  maxRiskAllowed: UiMaxRiskAllowed;
   /** Show news column when space allows. */
   showNewsColumn: boolean;
   /** Show trend/volume columns on wider screens. */
@@ -34,6 +46,10 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   preferExecutionEnabled: false,
   defaultQuantity: 1,
   compactScores: true,
+  cardDensity: "comfortable",
+  showScoreDetails: true,
+  showBlockedReasonDetails: true,
+  maxRiskAllowed: "medium",
   showNewsColumn: true,
   showTrendVolume: true,
   viewMode: "simple",
@@ -105,6 +121,11 @@ export function loadUiSettings(): UiSettings {
         Math.floor(Number(parsed.defaultQuantity) || 1),
       ),
       viewMode: parsed.viewMode === "advanced" ? "advanced" : "simple",
+      cardDensity:
+        parsed.cardDensity === "compact" ? "compact" : "comfortable",
+      showScoreDetails: parsed.showScoreDetails !== false,
+      showBlockedReasonDetails: parsed.showBlockedReasonDetails !== false,
+      maxRiskAllowed: parsed.maxRiskAllowed === "low" ? "low" : "medium",
     };
   } catch {
     return { ...DEFAULT_UI_SETTINGS };
@@ -120,6 +141,8 @@ export function saveUiSettings(settings: UiSettings): void {
     preferExecutionEnabled: false,
     defaultQuantity: Math.max(1, Math.floor(Number(settings.defaultQuantity) || 1)),
     viewMode: settings.viewMode === "advanced" ? "advanced" : "simple",
+    cardDensity: settings.cardDensity === "compact" ? "compact" : "comfortable",
+    maxRiskAllowed: settings.maxRiskAllowed === "low" ? "low" : "medium",
   };
   window.localStorage.setItem(KEY, JSON.stringify(next));
   emitUiSettingsChange();
@@ -136,7 +159,7 @@ export function parseWatchlistDraft(raw: string): string[] {
     seen.add(symbol);
     out.push(symbol);
   }
-  return out;
+  return filterUsStockSymbols(out);
 }
 
 export function getLocalWatchlistSymbols(): string[] {
@@ -150,6 +173,15 @@ export function addLocalWatchlistSymbol(symbol: string): string[] {
   if (!current.includes(nextSym)) {
     current.push(nextSym);
   }
+  const ui = loadUiSettings();
+  saveUiSettings({ ...ui, watchlistDraft: current.join(",") });
+  return current;
+}
+
+/** Remove a symbol from local watchlist preferences (browser only). */
+export function removeLocalWatchlistSymbol(symbol: string): string[] {
+  const nextSym = symbol.trim().toUpperCase();
+  const current = getLocalWatchlistSymbols().filter((s) => s !== nextSym);
   const ui = loadUiSettings();
   saveUiSettings({ ...ui, watchlistDraft: current.join(",") });
   return current;

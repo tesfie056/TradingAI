@@ -1,9 +1,5 @@
-import { ControlRoom } from "@/components/ControlRoom";
-import { loadDashboardData } from "@/lib/dashboard-data";
+import { redirect } from "next/navigation";
 
-export const dynamic = "force-dynamic";
-
-export default async function HomePage() {
-  const initialData = await loadDashboardData();
-  return <ControlRoom initialData={initialData} />;
+export default function HomePage() {
+  redirect("/dashboard");
 }

@@ -34,6 +34,8 @@ export type AiCommandCenterProps = {
   onPreparePreview?: (symbol: string, side: "buy" | "sell") => void;
   onSelectSymbol?: (symbol: string) => void;
   seedInstruction?: string | null;
+  /** drawer = modal overlay; page = full-width embedded assistant */
+  variant?: "drawer" | "page";
 };
 
 type ChatTurn = {
@@ -58,7 +60,9 @@ export function AiCommandCenter({
   onPreparePreview,
   onSelectSymbol,
   seedInstruction,
+  variant = "drawer",
 }: AiCommandCenterProps) {
+  const isPage = variant === "page";
   const [instruction, setInstruction] = useState(
     () => seedInstruction ?? "",
   );
@@ -71,13 +75,13 @@ export function AiCommandCenter({
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || isPage) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, isPage]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -173,15 +177,25 @@ export function AiCommandCenter({
     .reverse()
     .find((t) => t.role === "assistant");
 
+  const shellClass = isPage
+    ? "relative flex min-h-[32rem] w-full flex-col rounded-[var(--radius)] border border-[var(--border)] bg-[var(--panel)]"
+    : "fixed inset-0 z-50 flex justify-end";
+
+  const asideClass = isPage
+    ? "relative flex w-full flex-1 flex-col"
+    : "relative flex h-full w-full max-w-md flex-col border-l border-[var(--border)] bg-[var(--panel)] shadow-2xl sm:max-w-lg";
+
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <button
-        type="button"
-        aria-label="Close AI Assistant"
-        className="absolute inset-0 bg-black/50"
-        onClick={onClose}
-      />
-      <aside className="relative flex h-full w-full max-w-md flex-col border-l border-[var(--border)] bg-[var(--panel)] shadow-2xl sm:max-w-lg">
+    <div className={shellClass}>
+      {!isPage ? (
+        <button
+          type="button"
+          aria-label="Close AI Assistant"
+          className="absolute inset-0 bg-black/50"
+          onClick={onClose}
+        />
+      ) : null}
+      <aside className={asideClass}>
         <div className="flex items-start justify-between gap-3 border-b border-[var(--border)] px-5 py-4">
           <div>
             <h2 className="font-[family-name:var(--font-display)] text-2xl tracking-tight">
@@ -193,13 +207,15 @@ export function AiCommandCenter({
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="ui-btn border border-[var(--border)] text-sm text-[var(--muted)]"
-            >
-              Close
-            </button>
+            {!isPage ? (
+              <button
+                type="button"
+                onClick={onClose}
+                className="ui-btn border border-[var(--border)] text-sm text-[var(--muted)]"
+              >
+                Close
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={clearChat}

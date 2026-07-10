@@ -18,17 +18,19 @@ import type {
 } from "@/lib/dashboard-types";
 import type { DecisionHistoryEntry } from "@/lib/alpaca/types";
 import type { DecisionPerformanceEntry } from "@/lib/performance/types";
+import type { MonitorLogEntry } from "@/lib/monitor/types";
 
 type LogBundle = {
   decisions: DecisionHistoryEntry[];
   performance: DecisionPerformanceEntry[];
   trades: TradeRow[];
+  monitorLogs: MonitorLogEntry[];
   aiProvider: string;
   newsProvider: string;
   orderExecutionEnabled: boolean;
 };
 
-type LogKind = "all" | "decisions" | "blocked" | "orders" | "ai";
+type LogKind = "all" | "decisions" | "blocked" | "orders" | "ai" | "monitor";
 
 export function LogsView() {
   const [data, setData] = useState<LogBundle | null>(null);
@@ -46,20 +48,25 @@ export function LogsView() {
     let cancelled = false;
     void (async () => {
       try {
-        const [history, performance, trades, decision] = await Promise.all([
-          fetchJson<{ history: DecisionHistoryEntry[] }>("/api/ai/history"),
-          fetchJson<PerformancePayload>("/api/performance"),
-          fetchJson<{
-            trades: TradeRow[];
-            orderExecutionEnabled?: boolean;
-          }>("/api/trades"),
-          fetchJson<DecisionPayload>("/api/ai/decision").catch(() => null),
-        ]);
+        const [history, performance, trades, decision, monitor] =
+          await Promise.all([
+            fetchJson<{ history: DecisionHistoryEntry[] }>("/api/ai/history"),
+            fetchJson<PerformancePayload>("/api/performance"),
+            fetchJson<{
+              trades: TradeRow[];
+              orderExecutionEnabled?: boolean;
+            }>("/api/trades"),
+            fetchJson<DecisionPayload>("/api/ai/decision").catch(() => null),
+            fetchJson<{ logs?: MonitorLogEntry[] }>("/api/monitor/logs").catch(
+              () => null,
+            ),
+          ]);
         if (cancelled) return;
         setData({
           decisions: history.history ?? [],
           performance: performance.history ?? [],
           trades: trades.trades ?? [],
+          monitorLogs: monitor?.logs ?? [],
           aiProvider:
             decision?.news?.aiStatus?.activeProvider ??
             performance.history[0]?.aiProvider ??
@@ -86,6 +93,9 @@ export function LogsView() {
     for (const d of data?.decisions ?? []) set.add(d.symbol);
     for (const t of data?.trades ?? []) set.add(t.symbol);
     for (const a of aiHistory) a.relatedSymbols.forEach((s) => set.add(s));
+    for (const log of data?.monitorLogs ?? []) {
+      if (typeof log.meta?.symbol === "string") set.add(log.meta.symbol);
+    }
     return ["ALL", ...Array.from(set).sort()];
   }, [data, aiHistory]);
 
@@ -161,6 +171,21 @@ export function LogsView() {
     });
   }, [aiHistory, symbol, query]);
 
+  const monitorFiltered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (data?.monitorLogs ?? []).filter((log) => {
+      if (symbol !== "ALL") {
+        const metaSym =
+          typeof log.meta?.symbol === "string" ? log.meta.symbol : null;
+        if (metaSym !== symbol) return false;
+      }
+      if (!q) return true;
+      return `${log.event} ${log.message} ${log.level}`
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [data, symbol, query]);
+
   if (loading) {
     return <p className="text-sm text-[var(--muted)]">Loading logs…</p>;
   }
@@ -180,7 +205,8 @@ export function LogsView() {
       <div>
         <h1 className="h1">Logs</h1>
         <p className="mt-2 text-base text-[var(--muted)]">
-          Search decisions, blocks, AI commands, and paper orders. No secrets.
+          Search decisions, blocks, monitor events, AI commands, and paper
+          orders. No secrets.
         </p>
       </div>
 
@@ -233,6 +259,7 @@ export function LogsView() {
             <option value="decisions">Decisions</option>
             <option value="blocked">Blocked reasons</option>
             <option value="orders">Paper orders</option>
+            <option value="monitor">Monitor</option>
             <option value="ai">AI commands</option>
           </select>
         </div>
@@ -345,12 +372,52 @@ export function LogsView() {
         </Panel>
       )}
 
+      {(kind === "all" || kind === "monitor") && (
+        <Panel title="Monitor scan logs">
+          {monitorFiltered.length === 0 ? (
+            <EmptyState title="No monitor log entries">
+              <p>Start a monitor scan to populate this section.</p>
+            </EmptyState>
+          ) : (
+            <ul className="space-y-3 text-sm">
+              {monitorFiltered.slice(0, 50).map((log) => (
+                <li
+                  key={log.id}
+                  className="border-b border-[var(--border)]/40 pb-3"
+                >
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="font-semibold capitalize">{log.event}</span>
+                    <span
+                      className={`text-[10px] uppercase ${
+                        log.level === "error"
+                          ? "text-rose-200"
+                          : log.level === "warn"
+                            ? "text-amber-200"
+                            : "text-[var(--muted)]"
+                      }`}
+                    >
+                      {log.level}
+                    </span>
+                    <span className="text-xs text-[var(--muted)]">
+                      {formatTime(log.timestamp)}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--foreground)]/85">
+                    {log.message}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      )}
+
       {(kind === "all" || kind === "ai") && (
         <Panel title="AI command history (local)">
           {aiFiltered.length === 0 ? (
             <EmptyState title="No AI commands logged">
               <p>
-                Use Ask AI in the Control Room. Commands are stored in this
+                Use Ask AI on the Assistant page. Commands are stored in this
                 browser only.
               </p>
             </EmptyState>

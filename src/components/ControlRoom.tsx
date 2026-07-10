@@ -2,13 +2,15 @@
 
 import {
   Fragment,
-  useCallback,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   useTransition,
   type ReactNode,
 } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { formatMoney, formatNumber, formatTime } from "@/lib/format";
 import { fetchJson } from "@/lib/client/fetch-json";
 import type {
@@ -56,10 +58,11 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
 import { ScrollTable } from "@/components/ui/ScrollTable";
 import { SafetyStrip } from "@/components/ui/SafetyStrip";
-import { AiCommandCenter } from "@/components/AiCommandCenter";
-import { DashboardSummary } from "@/components/control-room/DashboardSummary";
+import { DashboardOverview } from "@/components/control-room/DashboardOverview";
 import { WatchlistDetailPanel } from "@/components/control-room/WatchlistDetailPanel";
 import { PaperTradeBlockPanel } from "@/components/trades/PaperTradeBlockPanel";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { SafetyBanner } from "@/components/layout/SafetyBanner";
 import { useUiChrome } from "@/components/layout/UiChromeContext";
 import {
   aiStatusDisplayLabel,
@@ -81,7 +84,6 @@ import {
   getLocalWatchlistSymbolsSnapshot,
   subscribeUiSettings,
 } from "@/lib/client/ui-settings";
-import type { AiCommandRequest } from "@/lib/ai/command-types";
 import type { SymbolNewsAnalysis } from "@/lib/news/types";
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
 
@@ -234,9 +236,20 @@ function selectClass() {
   return "border border-[var(--border)] bg-[var(--panel-elevated)] px-3 py-2 text-base text-[var(--foreground)] rounded-[var(--radius-sm)]";
 }
 
-export function ControlRoom({ initialData }: { initialData: DashboardData }) {
-  const { viewMode, openAi, closeAi, aiOpen, aiSeed } = useUiChrome();
+export type ControlRoomPage = "dashboard" | "watchlist" | "trade";
+
+export function ControlRoom({
+  initialData,
+  page = "dashboard",
+}: {
+  initialData: DashboardData;
+  page?: ControlRoomPage;
+}) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { viewMode } = useUiChrome();
   const simple = viewMode === "simple";
+  const tradeParamsApplied = useRef(false);
   const [data, setData] = useState(initialData);
   const [isPending, startTransition] = useTransition();
   const [aiHealthBusy, setAiHealthBusy] = useState(false);
@@ -376,67 +389,6 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
     }
   }
 
-  const buildAiContext = useCallback((): AiCommandRequest["context"] => {
-    return {
-      watchlist: market?.watchlist ?? [],
-      marketOpen: clock?.isOpen ?? null,
-      orderExecutionEnabled,
-      account: account
-        ? {
-            equity: account.account.equity,
-            cash: account.account.cash,
-            buyingPower: account.account.buyingPower,
-            currency: account.account.currency ?? currency,
-          }
-        : null,
-      marketCondition: marketCondition
-        ? {
-            label: marketCondition.label,
-            explanation: marketCondition.explanation,
-            marketScore: marketCondition.marketScore,
-          }
-        : null,
-      decisions: decisions.map((d) => ({
-        symbol: d.symbol,
-        action: d.action,
-        confidence: d.confidence,
-        riskLevel: d.riskLevel ?? d.riskStatus,
-        finalScore: d.scores?.finalScore,
-        technicalScore: d.scores?.technicalScore,
-        marketScore: d.scores?.marketScore,
-        newsScore: d.scores?.newsScore,
-        riskScore: d.scores?.riskScore,
-        tradeBlockReasons: d.tradeBlockReasons,
-        readyForManualPaperTrade: d.readyForManualPaperTrade,
-        summary: d.explanation?.summary ?? d.reasons[0],
-        technicalReason: d.explanation?.technical,
-        newsReason: d.explanation?.news ?? d.newsContext?.explanation,
-        marketReason:
-          d.explanation?.market ?? d.marketCondition?.explanation,
-        riskReason: d.explanation?.risk,
-      })),
-      newsBySymbol: Object.fromEntries(
-        Object.entries(newsBySymbol).map(([sym, n]) => [
-          sym,
-          {
-            overallSentiment: n.overallSentiment,
-            explanation: n.explanation,
-            headlines: n.items?.slice(0, 3).map((i) => i.headline) ?? [],
-          },
-        ]),
-      ),
-    };
-  }, [
-    market?.watchlist,
-    clock?.isOpen,
-    orderExecutionEnabled,
-    account,
-    currency,
-    marketCondition,
-    decisions,
-    newsBySymbol,
-  ]);
-
   function toggleExpanded(symbol: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -465,17 +417,12 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
     });
   }
 
-  async function prepareFromDecision(decision: AiDecision) {
+  function navigatePrepare(decision: AiDecision) {
     const side = actionToSide(decision.action);
     if (!side) return;
-    setManualSymbol(decision.symbol);
-    setManualSide(side);
-    await preparePaperTrade({
-      symbol: decision.symbol,
-      side,
-      action: decision.action,
-      riskStatus: decision.riskStatus,
-    });
+    router.push(
+      `/trade?symbol=${encodeURIComponent(decision.symbol)}&side=${side}&qty=${tradeQty}`,
+    );
   }
 
   async function preparePaperTrade(input: {
@@ -483,7 +430,9 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
     side: "buy" | "sell";
     action: AiDecision["action"];
     riskStatus: string;
+    qty?: number;
   }) {
+    const qty = input.qty ?? tradeQty;
     setTradeError(null);
     setTradeResult(null);
     setApproved(false);
@@ -495,7 +444,7 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
         body: JSON.stringify({
           symbol: input.symbol,
           side: input.side,
-          qty: tradeQty,
+          qty,
           action: input.action,
           riskStatus: input.riskStatus,
         }),
@@ -504,6 +453,7 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
       setPreviewStale(false);
       setManualSymbol(body.symbol);
       setManualSide(body.side);
+      if (input.qty != null) setTradeQty(body.qty);
       requestAnimationFrame(() => {
         document
           .getElementById("paper-trade-approval")
@@ -533,6 +483,44 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
       riskStatus: d?.riskStatus ?? "unknown",
     });
   }
+
+  useEffect(() => {
+    if (page !== "trade" || tradeParamsApplied.current) return;
+    const symbol = searchParams.get("symbol")?.trim().toUpperCase();
+    const sideRaw = searchParams.get("side")?.toLowerCase();
+    const qtyRaw = searchParams.get("qty");
+    if (!symbol && sideRaw == null && qtyRaw == null) return;
+    tradeParamsApplied.current = true;
+
+    const side: "buy" | "sell" =
+      sideRaw === "sell" ? "sell" : "buy";
+    const qty = qtyRaw
+      ? Math.max(1, Math.floor(Number(qtyRaw) || 1))
+      : tradeQty;
+
+    // Defer so URL hydration does not setState synchronously in the effect.
+    const timer = window.setTimeout(() => {
+      if (symbol) setManualSymbol(symbol);
+      if (sideRaw === "buy" || sideRaw === "sell") setManualSide(side);
+      if (qtyRaw) setTradeQty(qty);
+
+      if (symbol) {
+        const d = decisions.find((x) => x.symbol === symbol) ?? null;
+        const action =
+          side === "buy" ? ("BUY" as const) : ("SELL" as const);
+        void preparePaperTrade({
+          symbol,
+          side,
+          action: d && isPreparableAction(d.action) ? d.action : action,
+          riskStatus: d?.riskStatus ?? "unknown",
+          qty,
+        });
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+    // Apply URL params once on trade page mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, searchParams]);
 
   async function submitPaperTrade() {
     if (!preview || !approved) return;
@@ -715,95 +703,104 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
 
   return (
     <div className="flex flex-col gap-7">
-      <DashboardSummary
-        equity={account?.account.equity}
-        cash={account?.account.cash}
-        buyingPower={account?.account.buyingPower}
-        currency={currency}
-        marketOpen={clock?.isOpen ?? null}
-        marketCondition={marketCondition}
-        orderExecutionEnabled={orderExecutionEnabled}
-        decisions={decisions}
-        simple={simple}
-        onAskAi={() => openAi()}
-        onJumpWatchlist={() => {
-          document
-            .getElementById("watchlist")
-            ?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }}
-      />
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <PaperOnlyBanner detail="manual approval required" />
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={refresh}
-            disabled={isPending}
-            className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
-          >
-            {isPending ? "Refreshing…" : "Refresh"}
-          </button>
-          <p className="text-sm text-[var(--muted)]">
-            Updated {formatTime(data.loadedAt)}
-          </p>
-        </div>
-      </div>
-
-      {error && (
-        <div className="rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-base text-rose-100">
-          {error}
-        </div>
-      )}
-
-      {!simple && (
-        <AiHealthBanner
+      {page === "dashboard" ? (
+        <DashboardOverview
+          account={account}
+          currency={currency}
+          clock={clock}
+          marketCondition={marketCondition}
+          orderExecutionEnabled={orderExecutionEnabled}
+          decisions={decisions}
           aiHealth={aiHealth}
-          onRefresh={() => void refreshAiHealth()}
-          busy={aiHealthBusy}
+          simple={simple}
+          loadedAt={data.loadedAt}
+          error={error}
+          refresh={refresh}
+          isPending={isPending}
+          refreshAiHealth={() => void refreshAiHealth()}
+          aiHealthBusy={aiHealthBusy}
         />
-      )}
+      ) : null}
 
-      {!simple && <MarketConditionBanner condition={marketCondition} />}
+      {page === "watchlist" ? (
+        <>
+          <PageHeader
+            title="Watchlist"
+            description="U.S. stocks on your desk. Prepare opens the trade page for manual paper preview."
+          />
+          <SafetyBanner orderExecutionEnabled={orderExecutionEnabled} />
 
-      {(compareA || compareB) && !simple && (
-        <Panel title="Symbol compare">
-          <div className="mb-2 flex flex-wrap gap-2 text-sm">
-            <span className="text-[var(--muted)]">
-              Select up to two symbols with Compare on each row.
-            </span>
-            <button
-              type="button"
-              className="underline text-amber-100"
-              onClick={() => setCompareSymbols([null, null])}
-            >
-              Clear
-            </button>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2 text-base">
-            {[compareA, compareB].map((d, i) => (
-              <div
-                key={i}
-                className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-3"
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <PaperOnlyBanner detail="manual approval required" />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={refresh}
+                disabled={isPending}
+                className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
               >
-                {d ? (
-                  <>
-                    <p className="text-lg font-semibold">{d.symbol}</p>
-                    <p className="mt-1">
-                      {d.action} · {(d.confidence * 100).toFixed(0)}%
-                    </p>
-                    <p className="mt-1 text-[var(--muted)]">
-                      {d.explanation?.summary ?? d.reasons[0]}
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-[var(--muted)]">Slot {i + 1} empty</p>
-                )}
-              </div>
-            ))}
+                {isPending ? "Refreshing…" : "Refresh"}
+              </button>
+              <p className="text-sm text-[var(--muted)]">
+                Updated {formatTime(data.loadedAt)}
+              </p>
+            </div>
           </div>
-        </Panel>
-      )}
+
+          {error && (
+            <div className="rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-base text-rose-100">
+              {error}
+            </div>
+          )}
+
+          {!simple && (
+            <AiHealthBanner
+              aiHealth={aiHealth}
+              onRefresh={() => void refreshAiHealth()}
+              busy={aiHealthBusy}
+            />
+          )}
+
+          {!simple && <MarketConditionBanner condition={marketCondition} />}
+
+          {(compareA || compareB) && !simple && (
+            <Panel title="Symbol compare">
+              <div className="mb-2 flex flex-wrap gap-2 text-sm">
+                <span className="text-[var(--muted)]">
+                  Select up to two symbols with Compare on each row.
+                </span>
+                <button
+                  type="button"
+                  className="underline text-amber-100"
+                  onClick={() => setCompareSymbols([null, null])}
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 text-base">
+                {[compareA, compareB].map((d, i) => (
+                  <div
+                    key={i}
+                    className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-3"
+                  >
+                    {d ? (
+                      <>
+                        <p className="text-lg font-semibold">{d.symbol}</p>
+                        <p className="mt-1">
+                          {d.action} · {(d.confidence * 100).toFixed(0)}%
+                        </p>
+                        <p className="mt-1 text-[var(--muted)]">
+                          {d.explanation?.summary ?? d.reasons[0]}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-[var(--muted)]">Slot {i + 1} empty</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
 
       <Panel
         title="Watchlist"
@@ -1044,7 +1041,7 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
                               <button
                                 type="button"
                                 disabled={tradeBusy}
-                                onClick={() => void prepareFromDecision(d)}
+                                onClick={() => navigatePrepare(d)}
                                 className="ui-btn border border-amber-500/40 bg-amber-500/12 text-sm text-amber-50 disabled:opacity-50"
                               >
                                 Prepare
@@ -1079,11 +1076,9 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
                           colSpan={colSpan}
                           onAskAi={() => {
                             setSelectedSymbol(row.symbol);
-                            openAi(
-                              `Explain ${row.symbol} in simple English`,
-                            );
+                            router.push("/assistant");
                           }}
-                          onPrepare={() => void prepareFromDecision(d)}
+                          onPrepare={() => navigatePrepare(d)}
                         />
                       ) : null}
                     </Fragment>
@@ -1098,6 +1093,39 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
           </EmptyState>
         )}
       </Panel>
+        </>
+      ) : null}
+
+      {page === "trade" ? (
+        <>
+          <PageHeader
+            title="Manual paper trade"
+            description="Preview and manually approve paper orders for U.S. stocks. AI never submits."
+          />
+          <SafetyBanner orderExecutionEnabled={orderExecutionEnabled} />
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <PaperOnlyBanner detail="manual approval required" />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={refresh}
+                disabled={isPending}
+                className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
+              >
+                {isPending ? "Refreshing…" : "Refresh"}
+              </button>
+              <p className="text-sm text-[var(--muted)]">
+                Updated {formatTime(data.loadedAt)}
+              </p>
+            </div>
+          </div>
+
+          {error && (
+            <div className="rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-base text-rose-100">
+              {error}
+            </div>
+          )}
 
       <div id="paper-trade-approval" className="scroll-mt-24">
         <Panel title="Manual paper trade approval">
@@ -1435,32 +1463,8 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
           </EmptyState>
         )}
       </Panel>
-
-      <AiCommandCenter
-        key={aiSeed ?? "ai-command"}
-        open={aiOpen}
-        onClose={closeAi}
-        orderExecutionEnabled={orderExecutionEnabled}
-        selectedSymbol={selectedSymbol}
-        buildContext={buildAiContext}
-        seedInstruction={aiSeed}
-        onSelectSymbol={(sym) => {
-          setSelectedSymbol(sym);
-          setExpanded((prev) => new Set(prev).add(sym));
-        }}
-        onPreparePreview={(symbol, side) => {
-          closeAi();
-          setManualSymbol(symbol);
-          setManualSide(side);
-          const d = decisions.find((x) => x.symbol === symbol);
-          void preparePaperTrade({
-            symbol,
-            side,
-            action: side === "buy" ? "BUY" : "SELL",
-            riskStatus: d?.riskStatus ?? "unknown",
-          });
-        }}
-      />
+        </>
+      ) : null}
     </div>
   );
 }

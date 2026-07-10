@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { StatusPill } from "@/components/ui/badges";
 
 export type StatusBarProps = {
@@ -14,17 +14,26 @@ export type StatusBarProps = {
   safetyLabel?: string;
   viewMode?: "simple" | "advanced";
   onToggleViewMode?: () => void;
-  onAskAi?: () => void;
 };
 
 const NAV = [
-  { href: "/", label: "Dashboard" },
-  { href: "/#watchlist", label: "Watchlist" },
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/monitor", label: "Monitor" },
+  { href: "/watchlist", label: "Watchlist" },
+  { href: "/trade", label: "Trade" },
+  { href: "/assistant", label: "Assistant" },
   { href: "/performance", label: "Performance" },
   { href: "/backtest", label: "Backtest" },
   { href: "/settings", label: "Settings" },
   { href: "/logs", label: "Logs" },
 ] as const;
+
+function isActive(pathname: string, href: string): boolean {
+  if (href === "/dashboard") {
+    return pathname === "/" || pathname === "/dashboard";
+  }
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export function StatusBar({
   paperOnly = true,
@@ -36,33 +45,34 @@ export function StatusBar({
   safetyLabel,
   viewMode = "simple",
   onToggleViewMode,
-  onAskAi,
 }: StatusBarProps) {
   const pathname = usePathname();
+  const router = useRouter();
 
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--border)] bg-[var(--background)]/90 backdrop-blur-md">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 py-3 sm:px-6 sm:py-4 lg:px-8">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
-            <p className="font-[family-name:var(--font-display)] text-2xl tracking-tight text-[var(--foreground)] sm:text-[1.7rem]">
+            <Link
+              href="/dashboard"
+              className="font-[family-name:var(--font-display)] text-2xl tracking-tight text-[var(--foreground)] sm:text-[1.7rem]"
+            >
               TradingAI
-            </p>
+            </Link>
             <p className="mt-0.5 text-sm text-amber-300/90">
               U.S. stocks · paper trading desk
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {onAskAi ? (
-              <button
-                type="button"
-                onClick={onAskAi}
-                className="ui-btn border border-amber-500/45 bg-amber-500/15 text-amber-50 hover:bg-amber-500/25"
-              >
-                AI Assistant
-              </button>
-            ) : null}
+            <button
+              type="button"
+              onClick={() => router.push("/assistant")}
+              className="ui-btn border border-amber-500/45 bg-amber-500/15 text-amber-50 hover:bg-amber-500/25"
+            >
+              AI Assistant
+            </button>
             {onToggleViewMode ? (
               <button
                 type="button"
@@ -80,19 +90,13 @@ export function StatusBar({
           className="flex w-full gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           {NAV.map((item) => {
-            const pathOnly = item.href.split("#")[0] || "/";
-            const active =
-              pathOnly === "/"
-                ? pathname === "/" && !item.href.includes("#")
-                : pathname.startsWith(pathOnly);
-            const watchlistActive =
-              item.href.includes("#watchlist") && pathname === "/";
+            const active = isActive(pathname, item.href);
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 className={`shrink-0 rounded-full px-3.5 py-2 text-sm font-medium transition ${
-                  active || watchlistActive
+                  active
                     ? "bg-amber-500/18 text-amber-50 ring-1 ring-amber-500/40"
                     : "text-[var(--muted)] hover:bg-[var(--panel-elevated)] hover:text-[var(--foreground)]"
                 }`}

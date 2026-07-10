@@ -36,7 +36,7 @@ const FALLBACK: ShellStatus = {
 
 function AppShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { viewMode, toggleViewMode, openAi } = useUiChrome();
+  const { viewMode, toggleViewMode } = useUiChrome();
   const [status, setStatus] = useState<ShellStatus>(FALLBACK);
 
   useEffect(() => {
@@ -93,7 +93,6 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
         safetyLabel={status.safetyLabel}
         viewMode={viewMode}
         onToggleViewMode={toggleViewMode}
-        onAskAi={() => openAi()}
       />
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
         {children}

@@ -166,16 +166,17 @@ export async function getLatestBars(
   return result;
 }
 
-export type BarTimeframe = "1Min" | "5Min" | "15Min";
+export type BarTimeframe = "1Min" | "5Min" | "15Min" | "1Day";
 
 /**
- * Recent historical bars for trend / volatility heuristics.
+ * Recent historical bars for trend / volatility / daily session questions.
  * Uses IEX feed (paper-friendly). Does not place orders.
  */
 export async function getRecentBars(
   symbols: string[],
   timeframe: BarTimeframe = "5Min",
   limit = 24,
+  range?: { start?: string; end?: string },
 ): Promise<Record<string, AlpacaBar[]>> {
   if (symbols.length === 0) return {};
 
@@ -187,6 +188,8 @@ export async function getRecentBars(
     feed: "iex",
     sort: "asc",
   });
+  if (range?.start) params.set("start", range.start);
+  if (range?.end) params.set("end", range.end);
 
   const data = await dataFetch<{
     bars?: Record<string, AlpacaBar[]>;
@@ -197,6 +200,50 @@ export async function getRecentBars(
     result[symbol] = data.bars?.[symbol] ?? [];
   }
   return result;
+}
+
+export type AlpacaAssetLookup = {
+  symbol: string;
+  name: string;
+  status: string;
+  tradable: boolean;
+  class: string;
+  exchange: string;
+};
+
+/**
+ * Look up a single symbol on the paper trading API.
+ * Stocks only — rejects non us_equity / non-tradable assets.
+ * Does not place orders and does not list the full universe.
+ */
+export async function lookupUsEquityAsset(
+  symbol: string,
+): Promise<AlpacaAssetLookup | null> {
+  const sym = symbol.trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(sym)) return null;
+
+  try {
+    const asset = await tradingFetch<{
+      symbol?: string;
+      name?: string;
+      status?: string;
+      tradable?: boolean;
+      class?: string;
+      exchange?: string;
+    }>(`/v2/assets/${encodeURIComponent(sym)}`);
+
+    if (!asset?.symbol) return null;
+    return {
+      symbol: String(asset.symbol).toUpperCase(),
+      name: String(asset.name ?? asset.symbol),
+      status: String(asset.status ?? ""),
+      tradable: Boolean(asset.tradable),
+      class: String(asset.class ?? ""),
+      exchange: String(asset.exchange ?? ""),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export type PlaceOrderInput = {

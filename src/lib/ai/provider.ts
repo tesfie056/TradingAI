@@ -25,17 +25,33 @@ export function getOllamaConfig() {
       ? Math.min(parsed, 180_000)
       : DEFAULT_OLLAMA_TIMEOUT_MS;
 
+  // News enrichment should fail fast to heuristic — never block the UI for minutes.
+  const rawNews = process.env.OLLAMA_NEWS_TIMEOUT_MS?.trim();
+  const parsedNews = rawNews ? Number(rawNews) : 20_000;
+  const newsTimeoutMs =
+    Number.isFinite(parsedNews) && parsedNews >= 3_000
+      ? Math.min(parsedNews, 60_000)
+      : 20_000;
+
   return {
     baseUrl: (process.env.OLLAMA_BASE_URL ?? "http://localhost:11434").trim(),
     model: (process.env.OLLAMA_MODEL ?? "llama3.1").trim(),
     timeoutMs,
+    newsTimeoutMs,
   };
 }
 
-function createPrimaryProvider(name: AiProviderName): NewsAiProvider {
+function createPrimaryProvider(
+  name: AiProviderName,
+  timeoutMs?: number,
+): NewsAiProvider {
   if (name === "ollama") {
-    const { baseUrl, model, timeoutMs } = getOllamaConfig();
-    return new OllamaNewsAiProvider({ baseUrl, model, timeoutMs });
+    const { baseUrl, model, newsTimeoutMs } = getOllamaConfig();
+    return new OllamaNewsAiProvider({
+      baseUrl,
+      model,
+      timeoutMs: timeoutMs ?? newsTimeoutMs,
+    });
   }
   return new HeuristicNewsAiProvider();
 }
@@ -222,30 +238,126 @@ export async function interpretSymbolNewsWithFallback(input: {
   }
 }
 
+type NewsCacheEntry = {
+  at: number;
+  interpretation: AiNewsInterpretation;
+  status: AiProviderStatus;
+};
+
+const NEWS_AI_CACHE = new Map<string, NewsCacheEntry>();
+const NEWS_AI_CACHE_TTL_MS = 90_000;
+
+function newsCacheKey(symbol: string, items: NewsItem[]): string {
+  const heads = items
+    .slice(0, 3)
+    .map((i) => i.headline)
+    .join("|");
+  return `${symbol.toUpperCase()}::${heads}`;
+}
+
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  const n = Math.max(1, Math.min(concurrency, items.length || 1));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return results;
+}
+
 export async function interpretWatchlistNews(input: {
   symbols: string[];
   itemsBySymbol: Record<string, NewsItem[]>;
+  /** heuristic = skip Ollama (fast SSR). auto = Ollama with short timeout + cache. */
+  mode?: "auto" | "heuristic";
 }): Promise<{
   bySymbol: Record<string, AiNewsInterpretation>;
   status: AiProviderStatus;
 }> {
+  const mode = input.mode ?? "auto";
+  const requested = getAiProviderName();
   const bySymbol: Record<string, AiNewsInterpretation> = {};
   let status: AiProviderStatus = {
-    requestedProvider: getAiProviderName(),
-    activeProvider: getAiProviderName(),
+    requestedProvider: requested,
+    activeProvider: mode === "heuristic" ? "heuristic" : requested,
     usedFallback: false,
-    fallbackReason: null,
-    model: getAiProviderName() === "ollama" ? getOllamaConfig().model : null,
+    fallbackReason:
+      mode === "heuristic" && requested === "ollama"
+        ? "Fast path used heuristic news; refresh to enrich with Ollama."
+        : null,
+    model: requested === "ollama" ? getOllamaConfig().model : null,
     ok: true,
   };
 
-  for (const symbol of input.symbols) {
-    const result = await interpretSymbolNewsWithFallback({
-      symbol,
-      items: input.itemsBySymbol[symbol] ?? [],
+  const runOne = async (symbol: string) => {
+    const items = input.itemsBySymbol[symbol] ?? [];
+    if (mode === "heuristic" || requested === "heuristic") {
+      const heuristic = new HeuristicNewsAiProvider();
+      const interpretation = await heuristic.interpretSymbolNews({
+        symbol,
+        headlines: items.map((i) => ({
+          headline: i.headline,
+          source: i.source,
+          summary: i.summary,
+          sentiment: i.sentiment,
+          importance: i.importance,
+          possibleMarketImpact: i.possibleMarketImpact,
+        })),
+      });
+      return {
+        symbol,
+        interpretation,
+        status: {
+          requestedProvider: requested,
+          activeProvider: "heuristic" as const,
+          usedFallback: requested === "ollama",
+          fallbackReason:
+            requested === "ollama"
+              ? "Fast path used heuristic news; refresh to enrich with Ollama."
+              : null,
+          model: requested === "ollama" ? getOllamaConfig().model : null,
+          ok: true,
+        } satisfies AiProviderStatus,
+      };
+    }
+
+    const key = newsCacheKey(symbol, items);
+    const cached = NEWS_AI_CACHE.get(key);
+    if (cached && Date.now() - cached.at < NEWS_AI_CACHE_TTL_MS) {
+      return {
+        symbol,
+        interpretation: cached.interpretation,
+        status: cached.status,
+      };
+    }
+
+    const result = await interpretSymbolNewsWithFallback({ symbol, items });
+    NEWS_AI_CACHE.set(key, {
+      at: Date.now(),
+      interpretation: result.interpretation,
+      status: result.status,
     });
-    bySymbol[symbol] = result.interpretation;
-    // Prefer reporting fallback if any symbol fell back.
+    return {
+      symbol,
+      interpretation: result.interpretation,
+      status: result.status,
+    };
+  };
+
+  // Cap concurrency — local Ollama usually serializes; 2 keeps wall-clock down
+  // without stacking five 20s+ generations.
+  const results = await mapPool(input.symbols, 2, runOne);
+
+  for (const result of results) {
+    bySymbol[result.symbol] = result.interpretation;
     if (result.status.usedFallback) {
       status = result.status;
     } else if (!status.usedFallback) {

@@ -1,6 +1,14 @@
 "use client";
 
-import { Fragment, useState, useTransition } from "react";
+import {
+  Fragment,
+  useCallback,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+  type ReactNode,
+} from "react";
 import { formatMoney, formatNumber, formatTime } from "@/lib/format";
 import { fetchJson } from "@/lib/client/fetch-json";
 import type {
@@ -24,18 +32,51 @@ import type {
   PaperOrderPreview,
   PaperOrderSubmitResult,
 } from "@/lib/trades/types";
-import { actionToSide, canShowPreparePaperTrade } from "@/lib/trades/gates";
+import {
+  actionToSide,
+  canShowPreparePaperTrade,
+  isPreparableAction,
+} from "@/lib/trades/gates";
+import {
+  collectUiBlockExplanations,
+  submitButtonState,
+} from "@/lib/trades/block-explanations";
+import type { OrderGateBlocker } from "@/lib/trades/types";
 import { Panel } from "@/components/ui/Panel";
 import {
   ActionBadge,
+  ConfidenceBar,
+  ExecutionLockHint,
   RiskBadge,
+  ScoreBadges,
   SentimentBadge,
 } from "@/components/ui/badges";
 import { BlockReasonList } from "@/components/ui/BlockReasonList";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
 import { ScrollTable } from "@/components/ui/ScrollTable";
-import { uniqueBlockLabels } from "@/lib/client/block-reasons";
+import { SafetyStrip } from "@/components/ui/SafetyStrip";
+import { AiCommandCenter } from "@/components/AiCommandCenter";
+import { DashboardSummary } from "@/components/control-room/DashboardSummary";
+import { WatchlistDetailPanel } from "@/components/control-room/WatchlistDetailPanel";
+import { PaperTradeBlockPanel } from "@/components/trades/PaperTradeBlockPanel";
+import { useUiChrome } from "@/components/layout/UiChromeContext";
+import {
+  aiStatusDisplayLabel,
+  withoutGlobalBlockKinds,
+} from "@/lib/client/block-reasons";
+import {
+  collectRowBlockReasons,
+  DEFAULT_WATCHLIST_FILTERS,
+  filterAndSortWatchlist,
+  rowIsTradable,
+  type WatchlistFilters,
+  type WatchlistViewRow,
+} from "@/lib/client/watchlist-filters";
+import { loadUiSettings, addLocalWatchlistSymbol, getLocalWatchlistSymbols, subscribeUiSettings } from "@/lib/client/ui-settings";
+import type { AiCommandRequest } from "@/lib/ai/command-types";
+import type { SymbolNewsAnalysis } from "@/lib/news/types";
+import { filterUsStockSymbols } from "@/lib/stocks/universe";
 
 function trendLabel(d: AiDecision | null | undefined): string {
   const pct = d?.metrics?.trendPct;
@@ -45,46 +86,6 @@ function trendLabel(d: AiDecision | null | undefined): string {
   return `Flat ${(pct * 100).toFixed(2)}%`;
 }
 
-function volumeLabel(d: AiDecision | null | undefined): string {
-  const r = d?.metrics?.volumeRatio;
-  if (r == null) return "—";
-  if (r >= 1.4) return `Strong ${r.toFixed(2)}x`;
-  if (r < 0.7) return `Light ${r.toFixed(2)}x`;
-  return `Avg ${r.toFixed(2)}x`;
-}
-
-function collectBlockReasons(
-  d: AiDecision | null,
-  orderExecutionEnabled: boolean,
-): string[] {
-  const raw: string[] = [];
-  if (!orderExecutionEnabled) {
-    raw.push("Order execution off");
-  }
-  if (d?.tradeBlockReasons?.length) {
-    raw.push(...d.tradeBlockReasons);
-  }
-  if (d?.dataQuality && !d.dataQuality.isMarketOpen) {
-    raw.push("Market closed");
-  }
-  if (d?.dataQuality?.isQuoteStale) {
-    raw.push("Stale quote");
-  }
-  if (
-    d?.dataQuality?.spreadPercent != null &&
-    d.dataQuality.spreadPercent >= 0.01
-  ) {
-    raw.push("Wide spread");
-  }
-  if (d?.riskStatus === "high" || d?.riskLevel === "high") {
-    raw.push("High risk");
-  }
-  if (d?.action === "HOLD") {
-    raw.push("HOLD — not tradeable");
-  }
-  return uniqueBlockLabels(raw);
-}
-
 function MarketConditionBanner({
   condition,
 }: {
@@ -92,61 +93,390 @@ function MarketConditionBanner({
 }) {
   if (!condition) {
     return (
-      <div className="border border-[var(--border)] bg-[var(--panel)] px-4 py-3 text-sm text-[var(--muted)]">
+      <div className="ui-card text-base text-[var(--muted)]">
         Market condition (SPY/QQQ) unavailable
       </div>
     );
   }
   const tone =
     condition.label === "bullish"
-      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-100"
+      ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-100"
       : condition.label === "bearish"
         ? "border-rose-500/40 bg-rose-500/10 text-rose-100"
         : "border-amber-500/40 bg-amber-500/10 text-amber-100";
   return (
-    <div className={`border px-4 py-3 text-sm ${tone}`}>
+    <div className={`rounded-[var(--radius)] border px-5 py-4 text-base ${tone}`}>
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <span className="font-semibold tracking-wide uppercase">
+        <span className="text-lg font-semibold capitalize">
           Market {condition.label}
         </span>
-        <span className="text-xs opacity-90">
+        <span className="text-sm opacity-90">
           Score {(condition.marketScore * 100).toFixed(0)}%
         </span>
-        <span className="text-xs opacity-90">
-          SPY{" "}
-          {condition.spyTrendPct == null
-            ? "—"
-            : `${(condition.spyTrendPct * 100).toFixed(2)}%`}
-        </span>
-        <span className="text-xs opacity-90">
-          QQQ{" "}
-          {condition.qqqTrendPct == null
-            ? "—"
-            : `${(condition.qqqTrendPct * 100).toFixed(2)}%`}
-        </span>
       </div>
-      <p className="mt-1 text-xs opacity-90">{condition.explanation}</p>
+      <p className="mt-2 text-base leading-relaxed opacity-90">
+        {condition.explanation}
+      </p>
     </div>
   );
 }
 
+function AiHealthBanner({
+  aiHealth,
+  onRefresh,
+  busy,
+}: {
+  aiHealth: AiHealthPayload | null;
+  onRefresh: () => void;
+  busy: boolean;
+}) {
+  const label = aiStatusDisplayLabel(aiHealth?.statusLabel);
+  const connected = aiHealth?.statusLabel === "connected";
+  const tone = connected
+    ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-100"
+    : "border-amber-500/40 bg-amber-500/10 text-amber-100";
+
+  return (
+    <div
+      className={`flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius)] border px-5 py-3.5 text-base ${tone}`}
+    >
+      <div className="min-w-0">
+        <span className="font-semibold">{label}</span>
+        {aiHealth?.ollama.message ? (
+          <span className="ml-2 text-sm opacity-85">
+            {aiHealth.ollama.message}
+            {aiHealth.ollama.latencyMs != null
+              ? ` · ${aiHealth.ollama.latencyMs}ms`
+              : ""}
+          </span>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        onClick={onRefresh}
+        disabled={busy}
+        className="ui-btn shrink-0 border border-current/30 bg-black/10 text-sm disabled:opacity-50"
+      >
+        {busy ? "Checking…" : "Check AI"}
+      </button>
+    </div>
+  );
+}
+
+function PreviewField({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-[var(--radius-sm)] border border-[var(--border)]/70 bg-[var(--panel-elevated)]/50 px-3 py-2">
+      <div className="text-xs font-medium text-[var(--muted)]">{label}</div>
+      <div className="mt-0.5 text-base leading-snug">{children}</div>
+    </div>
+  );
+}
+
+function SubmitPaperButton({
+  previewBlockers,
+  approved,
+  executionEnabled,
+  canSubmitGates,
+  tradeBusy,
+  onSubmit,
+}: {
+  previewBlockers: OrderGateBlocker[];
+  approved: boolean;
+  executionEnabled: boolean;
+  canSubmitGates: boolean;
+  tradeBusy: boolean;
+  onSubmit: () => void;
+}) {
+  const explanations = collectUiBlockExplanations({
+    blockers: previewBlockers,
+    approved,
+  });
+  const btn = submitButtonState({
+    explanations,
+    tradeBusy,
+    canSubmitGates,
+    approved,
+    executionEnabled,
+  });
+  const label =
+    !tradeBusy &&
+    !canSubmitGates &&
+    previewBlockers.length === 0
+      ? "Cannot submit — preview out of date"
+      : btn.label;
+
+  return (
+    <button
+      type="button"
+      disabled={btn.disabled}
+      onClick={onSubmit}
+      className="ui-btn border border-emerald-500/50 bg-emerald-500/15 text-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {label}
+    </button>
+  );
+}
+
+function selectClass() {
+  return "border border-[var(--border)] bg-[var(--panel-elevated)] px-3 py-2 text-base text-[var(--foreground)] rounded-[var(--radius-sm)]";
+}
+
 export function ControlRoom({ initialData }: { initialData: DashboardData }) {
+  const { viewMode, openAi, closeAi, aiOpen, aiSeed } = useUiChrome();
+  const simple = viewMode === "simple";
   const [data, setData] = useState(initialData);
   const [isPending, startTransition] = useTransition();
+  const [aiHealthBusy, setAiHealthBusy] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [tradeQty, setTradeQty] = useState(1);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const [compareSymbols, setCompareSymbols] = useState<[string | null, string | null]>([
+    null,
+    null,
+  ]);
+  const [filters, setFilters] = useState<WatchlistFilters>(
+    DEFAULT_WATCHLIST_FILTERS,
+  );
+
+  const storedDefaultQty = useSyncExternalStore(
+    subscribeUiSettings,
+    () => loadUiSettings().defaultQuantity,
+    () => 1,
+  );
+  const localWatchlist = useSyncExternalStore(
+    subscribeUiSettings,
+    getLocalWatchlistSymbols,
+    () => [],
+  );
+  const [tradeQtyOverride, setTradeQtyOverride] = useState<number | null>(null);
+  const tradeQty = tradeQtyOverride ?? storedDefaultQty;
+  const setTradeQty = setTradeQtyOverride;
+  const [manualSymbol, setManualSymbol] = useState(
+    () => initialData.market?.market[0]?.symbol ?? "",
+  );
+  const [manualSide, setManualSide] = useState<"buy" | "sell">("buy");
   const [preview, setPreview] = useState<PaperOrderPreview | null>(null);
+  const [previewStale, setPreviewStale] = useState(false);
   const [approved, setApproved] = useState(false);
   const [tradeBusy, setTradeBusy] = useState(false);
   const [tradeError, setTradeError] = useState<string | null>(null);
   const [tradeResult, setTradeResult] = useState<PaperOrderSubmitResult | null>(
     null,
   );
+  const [symbolSearch, setSymbolSearch] = useState("");
+  const [symbolSearchBusy, setSymbolSearchBusy] = useState(false);
+  const [symbolSearchMsg, setSymbolSearchMsg] = useState<string | null>(null);
 
-  async function preparePaperTrade(decision: AiDecision) {
+  const {
+    account,
+    market,
+    decisions,
+    trades,
+    clock,
+    marketCondition,
+    orderExecutionEnabled,
+    aiHealth,
+    decisionHistory,
+    news,
+  } = data;
+  const error = refreshError ?? data.error;
+  const currency = account?.account.currency ?? "USD";
+  const marketClosed = clock ? !clock.isOpen : false;
+  const executionOff = !orderExecutionEnabled;
+
+  const viewRows: WatchlistViewRow[] = useMemo(() => {
+    if (!market?.market) return [];
+    return market.market.map((row) => {
+      const d =
+        row.decision ??
+        decisions.find((x) => x.symbol === row.symbol) ??
+        null;
+      return {
+        symbol: row.symbol,
+        last: row.last,
+        mid: row.mid,
+        decision: d,
+        blockReasons: collectRowBlockReasons(d, orderExecutionEnabled),
+        tradable: rowIsTradable(d, orderExecutionEnabled),
+      };
+    });
+  }, [market, decisions, orderExecutionEnabled]);
+
+  const filteredRows = useMemo(
+    () => filterAndSortWatchlist(viewRows, filters),
+    [viewRows, filters],
+  );
+
+  const paperWatchlistSymbols = useMemo(() => {
+    const fromServer = market?.watchlist ?? viewRows.map((r) => r.symbol);
+    return filterUsStockSymbols([
+      ...fromServer,
+      ...localWatchlist,
+      ...(manualSymbol ? [manualSymbol] : []),
+    ]);
+  }, [market?.watchlist, viewRows, localWatchlist, manualSymbol]);
+
+  const newsBySymbol = useMemo(() => news?.bySymbol ?? {}, [news?.bySymbol]);
+
+  function invalidatePreview(reason?: string) {
+    if (preview) {
+      setPreviewStale(true);
+      setApproved(false);
+      if (reason) setTradeError(reason);
+    }
+  }
+
+  async function addSymbolFromSearch() {
+    const raw = symbolSearch.trim().toUpperCase();
+    if (!raw) return;
+    setSymbolSearchBusy(true);
+    setSymbolSearchMsg(null);
+    setTradeError(null);
+    try {
+      const res = await fetchJson<{
+        ok: boolean;
+        error?: string;
+        symbol?: string;
+        name?: string;
+        message?: string;
+      }>(`/api/stocks/lookup?symbol=${encodeURIComponent(raw)}`);
+      if (!res.ok || !res.symbol) {
+        setSymbolSearchMsg(res.error ?? `Could not validate ${raw}`);
+        return;
+      }
+      addLocalWatchlistSymbol(res.symbol);
+      setManualSymbol(res.symbol);
+      setPreview(null);
+      setPreviewStale(false);
+      setApproved(false);
+      setSymbolSearch("");
+      setSymbolSearchMsg(
+        res.message ??
+          `${res.symbol} added to your local watchlist preferences.`,
+      );
+    } catch (err) {
+      setSymbolSearchMsg(
+        err instanceof Error ? err.message : "Symbol lookup failed",
+      );
+    } finally {
+      setSymbolSearchBusy(false);
+    }
+  }
+
+  const buildAiContext = useCallback((): AiCommandRequest["context"] => {
+    return {
+      watchlist: market?.watchlist ?? [],
+      marketOpen: clock?.isOpen ?? null,
+      orderExecutionEnabled,
+      account: account
+        ? {
+            equity: account.account.equity,
+            cash: account.account.cash,
+            buyingPower: account.account.buyingPower,
+            currency: account.account.currency ?? currency,
+          }
+        : null,
+      marketCondition: marketCondition
+        ? {
+            label: marketCondition.label,
+            explanation: marketCondition.explanation,
+            marketScore: marketCondition.marketScore,
+          }
+        : null,
+      decisions: decisions.map((d) => ({
+        symbol: d.symbol,
+        action: d.action,
+        confidence: d.confidence,
+        riskLevel: d.riskLevel ?? d.riskStatus,
+        finalScore: d.scores?.finalScore,
+        technicalScore: d.scores?.technicalScore,
+        marketScore: d.scores?.marketScore,
+        newsScore: d.scores?.newsScore,
+        riskScore: d.scores?.riskScore,
+        tradeBlockReasons: d.tradeBlockReasons,
+        readyForManualPaperTrade: d.readyForManualPaperTrade,
+        summary: d.explanation?.summary ?? d.reasons[0],
+        technicalReason: d.explanation?.technical,
+        newsReason: d.explanation?.news ?? d.newsContext?.explanation,
+        marketReason:
+          d.explanation?.market ?? d.marketCondition?.explanation,
+        riskReason: d.explanation?.risk,
+      })),
+      newsBySymbol: Object.fromEntries(
+        Object.entries(newsBySymbol).map(([sym, n]) => [
+          sym,
+          {
+            overallSentiment: n.overallSentiment,
+            explanation: n.explanation,
+            headlines: n.items?.slice(0, 3).map((i) => i.headline) ?? [],
+          },
+        ]),
+      ),
+    };
+  }, [
+    market?.watchlist,
+    clock?.isOpen,
+    orderExecutionEnabled,
+    account,
+    currency,
+    marketCondition,
+    decisions,
+    newsBySymbol,
+  ]);
+
+  function toggleExpanded(symbol: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(symbol)) next.delete(symbol);
+      else next.add(symbol);
+      return next;
+    });
+    setSelectedSymbol(symbol);
+  }
+
+  function expandAll() {
+    setExpanded(new Set(filteredRows.map((r) => r.symbol)));
+  }
+
+  function collapseAll() {
+    setExpanded(new Set());
+  }
+
+  function toggleCompare(symbol: string) {
+    setCompareSymbols(([a, b]) => {
+      if (a === symbol) return [b, null];
+      if (b === symbol) return [a, null];
+      if (!a) return [symbol, null];
+      if (!b) return [a, symbol];
+      return [b, symbol];
+    });
+  }
+
+  async function prepareFromDecision(decision: AiDecision) {
     const side = actionToSide(decision.action);
     if (!side) return;
+    setManualSymbol(decision.symbol);
+    setManualSide(side);
+    await preparePaperTrade({
+      symbol: decision.symbol,
+      side,
+      action: decision.action,
+      riskStatus: decision.riskStatus,
+    });
+  }
+
+  async function preparePaperTrade(input: {
+    symbol: string;
+    side: "buy" | "sell";
+    action: AiDecision["action"];
+    riskStatus: string;
+  }) {
     setTradeError(null);
     setTradeResult(null);
     setApproved(false);
@@ -156,16 +486,25 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          symbol: decision.symbol,
-          side,
+          symbol: input.symbol,
+          side: input.side,
           qty: tradeQty,
-          action: decision.action,
-          riskStatus: decision.riskStatus,
+          action: input.action,
+          riskStatus: input.riskStatus,
         }),
       });
       setPreview(body);
+      setPreviewStale(false);
+      setManualSymbol(body.symbol);
+      setManualSide(body.side);
+      requestAnimationFrame(() => {
+        document
+          .getElementById("paper-trade-approval")
+          ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
     } catch (err) {
       setPreview(null);
+      setPreviewStale(false);
       setTradeError(
         err instanceof Error ? err.message : "Failed to prepare paper trade",
       );
@@ -174,8 +513,33 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
     }
   }
 
+  async function prepareManual() {
+    const d =
+      decisions.find((x) => x.symbol === manualSymbol) ??
+      null;
+    const action =
+      manualSide === "buy" ? ("BUY" as const) : ("SELL" as const);
+    await preparePaperTrade({
+      symbol: manualSymbol,
+      side: manualSide,
+      action: d && isPreparableAction(d.action) ? d.action : action,
+      riskStatus: d?.riskStatus ?? "unknown",
+    });
+  }
+
   async function submitPaperTrade() {
     if (!preview || !approved) return;
+    if (
+      previewStale ||
+      preview.symbol !== manualSymbol ||
+      preview.side !== manualSide ||
+      preview.qty !== tradeQty
+    ) {
+      setTradeError(
+        "Preview is out of date. Click Preview paper trade so the selected symbol matches the preview.",
+      );
+      return;
+    }
     setTradeError(null);
     setTradeBusy(true);
     try {
@@ -213,6 +577,25 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
     }
   }
 
+  async function refreshAiHealth() {
+    setAiHealthBusy(true);
+    try {
+      const aiHealthRes = await fetchJson<AiHealthPayload>("/api/ai/health");
+      setData((prev) => ({
+        ...prev,
+        aiHealth: aiHealthRes,
+        orderExecutionEnabled:
+          aiHealthRes.orderExecutionEnabled ?? prev.orderExecutionEnabled,
+      }));
+    } catch (err) {
+      setRefreshError(
+        err instanceof Error ? err.message : "Failed to check AI health",
+      );
+    } finally {
+      setAiHealthBusy(false);
+    }
+  }
+
   function refresh() {
     setRefreshError(null);
     startTransition(() => {
@@ -220,8 +603,8 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
         try {
           const [
             safety,
-            account,
-            market,
+            accountRes,
+            marketRes,
             decisionRes,
             historyRes,
             tradesRes,
@@ -248,19 +631,19 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
           const decisionBySymbol = new Map(
             decisionRes.decisions.map((d) => [d.symbol, d]),
           );
-          const clock =
-            clockRes.clock ?? decisionRes.clock ?? market.clock ?? null;
+          const clockMerged =
+            clockRes.clock ?? decisionRes.clock ?? marketRes.clock ?? null;
 
           setData({
             ...data,
             ok: true,
             safety,
-            account,
-            clock,
+            account: accountRes,
+            clock: clockMerged,
             market: {
-              ...market,
-              clock,
-              market: market.market.map((row) => ({
+              ...marketRes,
+              clock: clockMerged,
+              market: marketRes.market.map((row) => ({
                 ...row,
                 decision: decisionBySymbol.get(row.symbol) ?? null,
                 dataQuality:
@@ -316,456 +699,701 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
     });
   }
 
-  const {
-    account,
-    market,
-    decisions,
-    trades,
-    clock,
-    marketCondition,
-    orderExecutionEnabled,
-  } = data;
-  const error = refreshError ?? data.error;
-  const currency = account?.account.currency ?? "USD";
+  const compareA = compareSymbols[0]
+    ? decisions.find((d) => d.symbol === compareSymbols[0])
+    : null;
+  const compareB = compareSymbols[1]
+    ? decisions.find((d) => d.symbol === compareSymbols[1])
+    : null;
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="font-[family-name:var(--font-display)] text-2xl tracking-tight">
-            Control Room
-          </h1>
-          <p className="mt-1 text-sm text-[var(--muted)]">
-            U.S. stock watchlist · score breakdown · manual paper approval
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-1">
+    <div className="flex flex-col gap-7">
+      <DashboardSummary
+        equity={account?.account.equity}
+        cash={account?.account.cash}
+        buyingPower={account?.account.buyingPower}
+        currency={currency}
+        marketOpen={clock?.isOpen ?? null}
+        marketCondition={marketCondition}
+        orderExecutionEnabled={orderExecutionEnabled}
+        decisions={decisions}
+        simple={simple}
+        onAskAi={() => openAi()}
+        onJumpWatchlist={() => {
+          document
+            .getElementById("watchlist")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }}
+      />
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PaperOnlyBanner detail="manual approval required" />
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={refresh}
             disabled={isPending}
-            className="border border-[var(--border)] bg-[var(--panel-elevated)] px-3 py-1.5 text-sm transition hover:border-amber-500/50 disabled:opacity-50"
+            className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
           >
             {isPending ? "Refreshing…" : "Refresh"}
           </button>
-          <p className="text-xs text-[var(--muted)]">
+          <p className="text-sm text-[var(--muted)]">
             Updated {formatTime(data.loadedAt)}
           </p>
         </div>
       </div>
 
       {error && (
-        <div className="border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
+        <div className="rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-base text-rose-100">
           {error}
         </div>
       )}
 
-      <PaperOnlyBanner detail="manual approval required · no one-click trading" />
+      {!simple && (
+        <AiHealthBanner
+          aiHealth={aiHealth}
+          onRefresh={() => void refreshAiHealth()}
+          busy={aiHealthBusy}
+        />
+      )}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
-        <Panel>
-          <div className="text-[var(--muted)] text-xs uppercase tracking-wide">
-            Equity
-          </div>
-          <div className="mt-1 text-xl font-semibold tabular-nums">
-            {formatMoney(account?.account.equity, currency)}
-          </div>
-        </Panel>
-        <Panel>
-          <div className="text-[var(--muted)] text-xs uppercase tracking-wide">
-            Cash
-          </div>
-          <div className="mt-1 text-xl font-semibold tabular-nums">
-            {formatMoney(account?.account.cash, currency)}
-          </div>
-        </Panel>
-        <Panel>
-          <div className="text-[var(--muted)] text-xs uppercase tracking-wide">
-            Buying power
-          </div>
-          <div className="mt-1 text-xl font-semibold tabular-nums">
-            {formatMoney(account?.account.buyingPower, currency)}
-          </div>
-        </Panel>
-        <Panel>
-          <div className="text-[var(--muted)] text-xs uppercase tracking-wide">
-            Market clock
-          </div>
-          <div className="mt-1 text-xl font-semibold">
-            {clock?.isOpen ? "Open" : clock ? "Closed" : "—"}
-          </div>
-        </Panel>
-      </div>
+      {!simple && <MarketConditionBanner condition={marketCondition} />}
 
-      <MarketConditionBanner condition={marketCondition} />
+      {(compareA || compareB) && !simple && (
+        <Panel title="Symbol compare">
+          <div className="mb-2 flex flex-wrap gap-2 text-sm">
+            <span className="text-[var(--muted)]">
+              Select up to two symbols with Compare on each row.
+            </span>
+            <button
+              type="button"
+              className="underline text-amber-100"
+              onClick={() => setCompareSymbols([null, null])}
+            >
+              Clear
+            </button>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 text-base">
+            {[compareA, compareB].map((d, i) => (
+              <div
+                key={i}
+                className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-3"
+              >
+                {d ? (
+                  <>
+                    <p className="text-lg font-semibold">{d.symbol}</p>
+                    <p className="mt-1">
+                      {d.action} · {(d.confidence * 100).toFixed(0)}%
+                    </p>
+                    <p className="mt-1 text-[var(--muted)]">
+                      {d.explanation?.summary ?? d.reasons[0]}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[var(--muted)]">Slot {i + 1} empty</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
 
-      <Panel title="Watchlist (U.S. stocks)">
-        {market && market.market.length > 0 ? (
-          <ScrollTable minWidthClass="min-w-[52rem] lg:min-w-[64rem]">
-            <table className="w-full text-left text-sm">
+      <Panel
+        title="Watchlist"
+        className="scroll-mt-28"
+        action={
+          <span className="text-sm text-[var(--muted)]">
+            {filteredRows.length} stocks
+          </span>
+        }
+      >
+        <div id="watchlist" className="mb-4 flex flex-col gap-3">
+          <div className="flex flex-wrap gap-2">
+            <input
+              value={filters.query}
+              onChange={(e) =>
+                setFilters((f) => ({ ...f, query: e.target.value }))
+              }
+              placeholder="Find symbol…"
+              className={`${selectClass()} w-36 rounded-[var(--radius-sm)]`}
+            />
+            <select
+              value={filters.decision}
+              onChange={(e) =>
+                setFilters((f) => ({
+                  ...f,
+                  decision: e.target.value as WatchlistFilters["decision"],
+                }))
+              }
+              className={`${selectClass()} rounded-[var(--radius-sm)]`}
+            >
+              <option value="ALL">All decisions</option>
+              <option value="BUY">BUY</option>
+              <option value="SELL">SELL</option>
+              <option value="HOLD">HOLD</option>
+            </select>
+            <select
+              value={filters.tradable}
+              onChange={(e) =>
+                setFilters((f) => ({
+                  ...f,
+                  tradable: e.target.value as WatchlistFilters["tradable"],
+                }))
+              }
+              className={`${selectClass()} rounded-[var(--radius-sm)]`}
+            >
+              <option value="ALL">All stocks</option>
+              <option value="tradable">Ready to preview</option>
+              <option value="blocked">Blocked</option>
+            </select>
+            {!simple && (
+              <>
+                <select
+                  value={filters.risk}
+                  onChange={(e) =>
+                    setFilters((f) => ({
+                      ...f,
+                      risk: e.target.value as WatchlistFilters["risk"],
+                    }))
+                  }
+                  className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                >
+                  <option value="ALL">All risk</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+                <select
+                  value={`${filters.sortKey}:${filters.sortDir}`}
+                  onChange={(e) => {
+                    const [sortKey, sortDir] = e.target.value.split(":") as [
+                      WatchlistFilters["sortKey"],
+                      WatchlistFilters["sortDir"],
+                    ];
+                    setFilters((f) => ({ ...f, sortKey, sortDir }));
+                  }}
+                  className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                >
+                  <option value="confidence:desc">Highest confidence</option>
+                  <option value="finalScore:desc">Highest score</option>
+                  <option value="symbol:asc">Symbol A–Z</option>
+                </select>
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={expandAll}
+              className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-sm"
+            >
+              Expand all
+            </button>
+            <button
+              type="button"
+              onClick={collapseAll}
+              className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-sm"
+            >
+              Collapse all
+            </button>
+          </div>
+        </div>
+
+        {filteredRows.length > 0 ? (
+          <ScrollTable
+            minWidthClass={
+              simple
+                ? "min-w-[28rem] md:min-w-[36rem]"
+                : "min-w-[36rem] md:min-w-[48rem]"
+            }
+          >
+            <table className="w-full text-left text-base">
               <thead>
-                <tr className="border-b border-[var(--border)] text-xs text-[var(--muted)] uppercase tracking-wide">
-                  <th className="py-2 pr-2 font-medium">Symbol</th>
-                  <th className="py-2 pr-2 font-medium">Last</th>
-                  <th className="py-2 pr-2 font-medium">Trend</th>
-                  <th className="py-2 pr-2 font-medium">Volume</th>
-                  <th className="py-2 pr-2 font-medium">News</th>
-                  <th className="py-2 pr-2 font-medium">Tech</th>
-                  <th className="py-2 pr-2 font-medium">Mkt</th>
-                  <th className="py-2 pr-2 font-medium">Risk</th>
-                  <th className="py-2 pr-2 font-medium">Decision</th>
-                  <th className="py-2 pr-2 font-medium">Conf.</th>
-                  <th className="py-2 font-medium">Blocked / trade</th>
+                <tr className="border-b border-[var(--border)] text-sm text-[var(--muted)]">
+                  <th className="py-3 pr-3 font-medium">Stock</th>
+                  <th className="py-3 pr-3 font-medium">Price</th>
+                  {!simple && (
+                    <>
+                      <th className="hidden py-3 pr-3 font-medium md:table-cell">
+                        Trend
+                      </th>
+                      <th className="hidden py-3 pr-3 font-medium sm:table-cell">
+                        News
+                      </th>
+                    </>
+                  )}
+                  <th className="py-3 pr-3 font-medium">Decision</th>
+                  <th className="py-3 pr-3 font-medium">
+                    {simple ? "Confidence" : "Scores"}
+                  </th>
+                  <th className="py-3 font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
-                {market.market.map((row) => {
-                  const d =
-                    row.decision ??
-                    decisions.find((x) => x.symbol === row.symbol) ??
-                    null;
-                  const isOpen = expanded === row.symbol;
+                {filteredRows.map((row) => {
+                  const d = row.decision;
+                  const isOpen = expanded.has(row.symbol);
+                  const isActive = selectedSymbol === row.symbol;
                   const canPrepare = d != null && canShowPreparePaperTrade(d);
-                  const blockReasons = collectBlockReasons(
-                    d,
-                    orderExecutionEnabled,
+                  const rowBlockReasons = withoutGlobalBlockKinds(
+                    row.blockReasons,
+                    { marketClosed, executionOff },
                   );
+                  const newsForSym: SymbolNewsAnalysis | null =
+                    newsBySymbol[row.symbol] ?? null;
+                  const hist = (decisionHistory ?? []).filter(
+                    (h) => h.symbol === row.symbol,
+                  );
+                  const otherCompare =
+                    compareSymbols[0] === row.symbol
+                      ? compareB
+                      : compareSymbols[1] === row.symbol
+                        ? compareA
+                        : compareA && compareB
+                          ? null
+                          : (compareA ?? compareB);
+                  const colSpan = simple ? 5 : 7;
 
                   return (
                     <Fragment key={row.symbol}>
-                      <tr className="border-b border-[var(--border)]/50 align-top">
-                        <td className="py-2.5 pr-2">
+                      <tr
+                        className={`border-b border-[var(--border)]/40 align-middle transition-colors ${
+                          isOpen || isActive
+                            ? "bg-[var(--panel-elevated)]/30"
+                            : "hover:bg-[var(--panel-elevated)]/15"
+                        }`}
+                      >
+                        <td className="py-3.5 pr-3">
                           <button
                             type="button"
-                            className="font-semibold text-left hover:text-amber-200"
-                            onClick={() =>
-                              setExpanded(isOpen ? null : row.symbol)
-                            }
+                            aria-expanded={isOpen}
+                            className="text-left text-lg font-semibold hover:text-amber-200"
+                            onClick={() => toggleExpanded(row.symbol)}
                           >
                             {row.symbol}
-                            <span className="ml-1 text-[10px] text-[var(--muted)]">
-                              {isOpen ? "▾" : "▸"}
+                            <span
+                              className={`ml-1.5 inline-block text-sm text-[var(--muted)] transition-transform duration-200 ${
+                                isOpen ? "rotate-90" : ""
+                              }`}
+                            >
+                              ▸
                             </span>
                           </button>
+                          {!simple && (
+                            <button
+                              type="button"
+                              onClick={() => toggleCompare(row.symbol)}
+                              className={`mt-1 block text-sm ${
+                                compareSymbols[0] === row.symbol ||
+                                compareSymbols[1] === row.symbol
+                                  ? "text-amber-200"
+                                  : "text-[var(--muted)] hover:text-amber-100"
+                              }`}
+                            >
+                              Compare
+                            </button>
+                          )}
                         </td>
-                        <td className="py-2.5 pr-2 tabular-nums">
+                        <td className="py-3.5 pr-3 text-lg tabular-nums">
                           {formatNumber(row.last ?? row.mid)}
                         </td>
-                        <td className="py-2.5 pr-2 text-xs">{trendLabel(d)}</td>
-                        <td className="py-2.5 pr-2 text-xs">
-                          {volumeLabel(d)}
-                        </td>
-                        <td className="py-2.5 pr-2">
-                          <SentimentBadge
-                            sentiment={d?.newsContext?.overallSentiment}
-                          />
-                        </td>
-                        <td className="py-2.5 pr-2 tabular-nums text-xs">
-                          {d?.scores
-                            ? `${(d.scores.technicalScore * 100).toFixed(0)}`
-                            : "—"}
-                        </td>
-                        <td className="py-2.5 pr-2 tabular-nums text-xs">
-                          {d?.scores
-                            ? `${(d.scores.marketScore * 100).toFixed(0)}`
-                            : "—"}
-                        </td>
-                        <td className="py-2.5 pr-2">
-                          <div className="flex flex-col gap-0.5">
-                            <RiskBadge
-                              status={d?.riskLevel ?? d?.riskStatus}
-                            />
-                            <span className="text-[10px] tabular-nums text-[var(--muted)]">
-                              {d?.scores
-                                ? `${(d.scores.riskScore * 100).toFixed(0)}`
-                                : ""}
-                            </span>
+                        {!simple && (
+                          <>
+                            <td className="hidden py-3.5 pr-3 whitespace-nowrap md:table-cell">
+                              {trendLabel(d)}
+                            </td>
+                            <td className="hidden py-3.5 pr-3 sm:table-cell">
+                              <SentimentBadge
+                                sentiment={d?.newsContext?.overallSentiment}
+                              />
+                            </td>
+                          </>
+                        )}
+                        <td className="py-3.5 pr-3">
+                          <div className="flex flex-col gap-1">
+                            {d ? <ActionBadge action={d.action} /> : "—"}
+                            {d?.riskLevel || d?.riskStatus ? (
+                              <RiskBadge
+                                status={d.riskLevel ?? d.riskStatus}
+                              />
+                            ) : null}
                           </div>
                         </td>
-                        <td className="py-2.5 pr-2">
-                          {d ? <ActionBadge action={d.action} /> : "—"}
+                        <td className="py-3.5 pr-3">
+                          {simple ? (
+                            d ? (
+                              <ConfidenceBar value={d.confidence} />
+                            ) : (
+                              "—"
+                            )
+                          ) : (
+                            <ScoreBadges scores={d?.scores} />
+                          )}
                         </td>
-                        <td className="py-2.5 pr-2 tabular-nums text-xs">
-                          {d ? `${(d.confidence * 100).toFixed(0)}%` : "—"}
-                        </td>
-                        <td className="py-2.5 max-w-[14rem]">
+                        <td className="py-3.5 max-w-[16rem]">
                           {canPrepare && d ? (
-                            <div className="flex flex-col gap-1">
-                              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
-                                Ready for manual paper trade
-                              </span>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {executionOff && <ExecutionLockHint />}
                               <button
                                 type="button"
                                 disabled={tradeBusy}
-                                onClick={() => void preparePaperTrade(d)}
-                                className="border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-100 disabled:opacity-50"
+                                onClick={() => void prepareFromDecision(d)}
+                                className="ui-btn border border-amber-500/40 bg-amber-500/12 text-sm text-amber-50 disabled:opacity-50"
                               >
-                                Prepare Paper Trade
+                                Prepare
                               </button>
                             </div>
                           ) : (
-                            <BlockReasonList
-                              reasons={blockReasons}
-                              emptyLabel="—"
-                            />
+                            <div className="flex flex-wrap items-start gap-2">
+                              {executionOff && <ExecutionLockHint />}
+                              <BlockReasonList
+                                reasons={rowBlockReasons}
+                                emptyLabel={
+                                  executionOff || marketClosed
+                                    ? "See summary"
+                                    : "—"
+                                }
+                                maxVisible={simple ? 1 : 2}
+                                layout="inline"
+                              />
+                            </div>
                           )}
                         </td>
                       </tr>
-                      {isOpen && d && (
-                        <tr className="border-b border-[var(--border)]/60 bg-[var(--panel-elevated)]/40">
-                          <td colSpan={11} className="px-3 py-3 text-sm">
-                            <div className="grid gap-3 md:grid-cols-2">
-                              <div>
-                                <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                                  Technical reason
-                                </h3>
-                                <p className="mt-1 text-[var(--foreground)]/90">
-                                  {d.explanation?.technical ?? "—"}
-                                </p>
-                              </div>
-                              <div>
-                                <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                                  News reason
-                                </h3>
-                                <p className="mt-1 text-[var(--foreground)]/90">
-                                  {d.explanation?.news ?? "—"}
-                                </p>
-                              </div>
-                              <div>
-                                <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                                  Market reason
-                                </h3>
-                                <p className="mt-1 text-[var(--foreground)]/90">
-                                  {d.explanation?.market ?? "—"}
-                                </p>
-                              </div>
-                              <div>
-                                <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                                  Risk reason
-                                </h3>
-                                <p className="mt-1 text-[var(--foreground)]/90">
-                                  {d.explanation?.risk ?? "—"}
-                                </p>
-                              </div>
-                            </div>
-                            <div className="mt-3 border-t border-[var(--border)] pt-3">
-                              <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-200/90">
-                                Final decision (simple English)
-                              </h3>
-                              <p className="mt-1">
-                                {d.explanation?.summary ??
-                                  d.reasons[0] ??
-                                  "—"}
-                              </p>
-                              {blockReasons.length > 0 && (
-                                <div className="mt-2">
-                                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-rose-200/90">
-                                    Why trade is blocked
-                                  </p>
-                                  <BlockReasonList reasons={blockReasons} />
-                                </div>
-                              )}
-                              {d.scores && (
-                                <p className="mt-2 text-xs text-[var(--muted)]">
-                                  Scores — tech{" "}
-                                  {(d.scores.technicalScore * 100).toFixed(0)} ·
-                                  news {(d.scores.newsScore * 100).toFixed(0)} ·
-                                  market{" "}
-                                  {(d.scores.marketScore * 100).toFixed(0)} ·
-                                  risk {(d.scores.riskScore * 100).toFixed(0)} ·
-                                  final{" "}
-                                  {(d.scores.finalScore * 100).toFixed(0)}
-                                </p>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
+                      {d ? (
+                        <WatchlistDetailPanel
+                          d={d}
+                          open={isOpen}
+                          allBlockReasons={row.blockReasons}
+                          news={newsForSym}
+                          history={hist}
+                          compareWith={otherCompare}
+                          simple={simple}
+                          colSpan={colSpan}
+                          onAskAi={() => {
+                            setSelectedSymbol(row.symbol);
+                            openAi(
+                              `Explain ${row.symbol} in simple English`,
+                            );
+                          }}
+                          onPrepare={() => void prepareFromDecision(d)}
+                        />
+                      ) : null}
                     </Fragment>
                   );
                 })}
               </tbody>
             </table>
-            <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[var(--muted)]">
-              <label className="flex items-center gap-2">
-                Default qty
+          </ScrollTable>
+        ) : (
+          <EmptyState title="No matching stocks">
+            <p>Adjust filters or refresh the watchlist.</p>
+          </EmptyState>
+        )}
+      </Panel>
+
+      <div id="paper-trade-approval" className="scroll-mt-24">
+        <Panel title="Manual paper trade approval">
+          <SafetyStrip
+            orderExecutionEnabled={orderExecutionEnabled}
+            compact
+          />
+          <PaperOnlyBanner detail="AI cannot submit · confirm required" />
+
+          <div className="mb-5 mt-4 flex flex-col gap-4">
+            <div className="grid gap-4 text-base sm:grid-cols-2 lg:grid-cols-4">
+              <label className="flex flex-col gap-1.5 sm:col-span-2 lg:col-span-1">
+                <span className="text-sm text-[var(--muted)]">
+                  Watchlist symbols
+                </span>
+                <select
+                  value={manualSymbol}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setManualSymbol(next);
+                    if (preview && preview.symbol !== next) {
+                      setPreview(null);
+                      setPreviewStale(false);
+                      setApproved(false);
+                      setTradeError(
+                        `Symbol changed to ${next}. Click Preview paper trade again.`,
+                      );
+                    }
+                  }}
+                  className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                >
+                  {paperWatchlistSymbols.map((sym) => (
+                    <option key={sym} value={sym}>
+                      {sym}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-xs text-[var(--muted)]">
+                  Only your configured watchlist appears here. This is not the
+                  full Alpaca stock universe.
+                </span>
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm text-[var(--muted)]">Side</span>
+                <select
+                  value={manualSide}
+                  onChange={(e) => {
+                    const next = e.target.value as "buy" | "sell";
+                    setManualSide(next);
+                    if (preview && preview.side !== next) {
+                      setPreview(null);
+                      setPreviewStale(false);
+                      setApproved(false);
+                      setTradeError(
+                        `Side changed to ${next.toUpperCase()}. Click Preview paper trade again.`,
+                      );
+                    }
+                  }}
+                  className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                >
+                  <option value="buy">BUY</option>
+                  <option value="sell">SELL</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm text-[var(--muted)]">Quantity</span>
                 <input
                   type="number"
                   min={1}
                   step={1}
                   value={tradeQty}
-                  onChange={(e) =>
-                    setTradeQty(
-                      Math.max(1, Math.floor(Number(e.target.value) || 1)),
-                    )
-                  }
-                  className="w-16 border border-[var(--border)] bg-[var(--panel-elevated)] px-2 py-1 text-[var(--foreground)]"
+                  onChange={(e) => {
+                    const next = Math.max(
+                      1,
+                      Math.floor(Number(e.target.value) || 1),
+                    );
+                    setTradeQty(next);
+                    if (preview && preview.qty !== next) {
+                      invalidatePreview(
+                        `Quantity changed to ${next}. Click Preview paper trade again.`,
+                      );
+                      setPreview(null);
+                      setPreviewStale(false);
+                    }
+                  }}
+                  className={`${selectClass()} rounded-[var(--radius-sm)]`}
                 />
               </label>
-              <span>
-                Click a symbol to expand details ·{" "}
-                {market.watchlist.join(", ")}
-              </span>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  disabled={tradeBusy || !manualSymbol}
+                  onClick={() => void prepareManual()}
+                  className="ui-btn w-full border border-amber-500/40 bg-amber-500/10 text-amber-100 disabled:opacity-50"
+                >
+                  {tradeBusy ? "Preparing…" : "Preview paper trade"}
+                </button>
+              </div>
             </div>
-          </ScrollTable>
-        ) : (
-          <EmptyState title="No watchlist quotes">
-            <p>Check Alpaca paper credentials and refresh.</p>
-          </EmptyState>
-        )}
-      </Panel>
 
-      <Panel title="Manual paper trade approval">
-        <div className="mb-3 border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm font-semibold tracking-wide text-amber-100 uppercase">
-          PAPER TRADE ONLY — not real money · no one-click trading · confirm
-          required
-        </div>
-        {!orderExecutionEnabled && (
-          <div className="mb-3">
-            <BlockReasonList reasons={["Order execution off"]} />
-            <p className="mt-2 text-sm text-amber-200/90">
-              Set{" "}
-              <code className="font-mono">
-                ENABLE_PAPER_ORDER_EXECUTION=true
-              </code>{" "}
-              in <code className="font-mono">.env.local</code> to allow manual
-              paper submits after confirmation.
-            </p>
-          </div>
-        )}
-        {tradeError && (
-          <p className="mb-3 text-sm text-rose-300">{tradeError}</p>
-        )}
-        {preview ? (
-          <div className="flex flex-col gap-3 text-sm">
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              <div>
-                <div className="text-[var(--muted)]">Symbol</div>
-                <div className="font-semibold">{preview.symbol}</div>
-              </div>
-              <div>
-                <div className="text-[var(--muted)]">Side</div>
-                <ActionBadge action={preview.side} />
-              </div>
-              <div>
-                <div className="text-[var(--muted)]">Quantity</div>
-                <div className="tabular-nums">{preview.qty}</div>
-              </div>
-              <div>
-                <div className="text-[var(--muted)]">Order type</div>
-                <div className="uppercase">
-                  {preview.orderType} / {preview.timeInForce}
-                </div>
-              </div>
-              <div>
-                <div className="text-[var(--muted)]">Est. price</div>
-                <div className="tabular-nums">
-                  {formatMoney(preview.estimatedPrice, currency)}
-                </div>
-              </div>
-              <div>
-                <div className="text-[var(--muted)]">Est. notional</div>
-                <div className="tabular-nums">
-                  {formatMoney(preview.estimatedNotional, currency)}
-                  <span className="ml-1 text-xs text-[var(--muted)]">
-                    (max {formatMoney(preview.maxNotional, currency)})
+            <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-3">
+              <label className="flex flex-col gap-1.5 text-base sm:flex-row sm:items-end sm:gap-3">
+                <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <span className="text-sm text-[var(--muted)]">
+                    Search stock symbol
                   </span>
+                  <input
+                    value={symbolSearch}
+                    onChange={(e) =>
+                      setSymbolSearch(e.target.value.toUpperCase())
+                    }
+                    placeholder="e.g. TSLA, AMD, META"
+                    className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void addSymbolFromSearch();
+                      }
+                    }}
+                  />
+                </span>
+                <button
+                  type="button"
+                  disabled={symbolSearchBusy || !symbolSearch.trim()}
+                  onClick={() => void addSymbolFromSearch()}
+                  className="ui-btn shrink-0 border border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] disabled:opacity-50"
+                >
+                  {symbolSearchBusy ? "Checking…" : "Validate & add"}
+                </button>
+              </label>
+              <p className="mt-2 text-xs text-[var(--muted)]">
+                Validates one symbol via Alpaca paper assets. Adds it to your
+                local watchlist preferences only — does not load the full stock
+                universe.
+              </p>
+              {symbolSearchMsg ? (
+                <p className="mt-2 text-sm text-amber-100/90">{symbolSearchMsg}</p>
+              ) : null}
+            </div>
+          </div>
+
+          {executionOff && (
+            <div className="mb-4 rounded-[var(--radius-sm)] border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-base text-amber-100">
+              <p className="font-semibold">Order execution is OFF (default).</p>
+              <p className="mt-1.5 text-sm leading-relaxed">
+                Preview is allowed for review. Submit stays disabled until{" "}
+                <code className="font-mono">
+                  ENABLE_PAPER_ORDER_EXECUTION=true
+                </code>{" "}
+                in <code className="font-mono">.env.local</code>.
+              </p>
+            </div>
+          )}
+
+          {tradeError && (
+            <p className="mb-4 rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-base text-rose-200">
+              {tradeError}
+            </p>
+          )}
+
+          {preview ? (
+            <div className="paper-preview-enter flex flex-col gap-3 text-base">
+              {(previewStale ||
+                preview.symbol !== manualSymbol ||
+                preview.side !== manualSide ||
+                preview.qty !== tradeQty) && (
+                <div className="rounded-[var(--radius-sm)] border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-amber-50">
+                  <p className="font-semibold">Preview out of date</p>
+                  <p className="mt-1 text-sm leading-relaxed">
+                    Selected controls are {manualSymbol} {manualSide.toUpperCase()}{" "}
+                    × {tradeQty}, but this preview is for {preview.symbol}{" "}
+                    {preview.side.toUpperCase()} × {preview.qty}. Click{" "}
+                    <strong>Preview paper trade</strong> again so they match.
+                  </p>
                 </div>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <PreviewField label="Preview symbol">
+                  <div className="font-semibold">
+                    {preview.symbol}
+                    {preview.symbol === manualSymbol ? (
+                      <span className="ml-2 text-xs font-medium text-emerald-300">
+                        matches selection
+                      </span>
+                    ) : (
+                      <span className="ml-2 text-xs font-medium text-amber-200">
+                        ≠ selected {manualSymbol}
+                      </span>
+                    )}
+                  </div>
+                </PreviewField>
+                <PreviewField label="Side">
+                  <ActionBadge action={preview.side} />
+                </PreviewField>
+                <PreviewField label="Quantity">
+                  <div className="tabular-nums font-semibold">
+                    {preview.qty}
+                  </div>
+                </PreviewField>
+                <PreviewField label="Order type">
+                  <div className="uppercase">
+                    {preview.orderType} / {preview.timeInForce}
+                  </div>
+                </PreviewField>
+                <PreviewField label="Est. price">
+                  <div className="tabular-nums">
+                    {formatMoney(preview.estimatedPrice, currency)}
+                  </div>
+                </PreviewField>
+                <PreviewField label="Est. notional">
+                  <div className="tabular-nums">
+                    {formatMoney(preview.estimatedNotional, currency)}
+                    <span className="ml-1 text-sm text-[var(--muted)]">
+                      (max {formatMoney(preview.maxNotional, currency)})
+                    </span>
+                  </div>
+                </PreviewField>
               </div>
-            </div>
 
-            {preview.gates.blockers.length > 0 && (
-              <div>
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-rose-300">
-                  Blocked — cannot submit
-                </h3>
-                <BlockReasonList
-                  reasons={preview.gates.blockers.map((b) => b.message)}
-                />
-                <ul className="mt-2 list-disc space-y-0.5 pl-4 text-xs text-[var(--muted)]">
-                  {preview.gates.blockers.map((b) => (
-                    <li key={b.code}>{b.message}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            <label className="flex items-start gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={approved}
-                onChange={(e) => setApproved(e.target.checked)}
-                className="mt-1"
+              <PaperTradeBlockPanel
+                blockers={preview.gates.blockers}
+                approved={approved}
+                executionEnabled={preview.executionEnabled}
               />
-              <span>
-                I understand this is a <strong>PAPER TRADE ONLY</strong> and I
-                manually approve submitting this market order. This is not
-                one-click trading.
-              </span>
-            </label>
 
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={
-                  tradeBusy ||
-                  !approved ||
-                  !preview.executionEnabled ||
-                  preview.gates.blockers.length > 0
-                }
-                onClick={() => void submitPaperTrade()}
-                className="border border-emerald-500/50 bg-emerald-500/15 px-3 py-1.5 text-sm text-emerald-100 disabled:opacity-40"
-              >
-                {tradeBusy ? "Submitting…" : "Confirm & submit paper order"}
-              </button>
-              <button
-                type="button"
-                disabled={tradeBusy}
-                onClick={() => {
-                  setPreview(null);
-                  setApproved(false);
-                  setTradeResult(null);
-                  setTradeError(null);
-                }}
-                className="border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)]"
-              >
-                Cancel
-              </button>
+              <label className="flex items-start gap-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-4 text-base">
+                <input
+                  type="checkbox"
+                  checked={approved}
+                  onChange={(e) => setApproved(e.target.checked)}
+                  className="mt-1 h-4 w-4 shrink-0"
+                />
+                <span>
+                  I understand this is a <strong>PAPER TRADE ONLY</strong> and I
+                  manually approve submitting this market order. This is not
+                  one-click or automatic trading.
+                </span>
+              </label>
+
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                <SubmitPaperButton
+                  previewBlockers={preview.gates.blockers}
+                  approved={approved}
+                  executionEnabled={preview.executionEnabled}
+                  canSubmitGates={
+                    preview.gates.blockers.length === 0 &&
+                    !previewStale &&
+                    preview.symbol === manualSymbol &&
+                    preview.side === manualSide &&
+                    preview.qty === tradeQty
+                  }
+                  tradeBusy={tradeBusy}
+                  onSubmit={() => void submitPaperTrade()}
+                />
+                <button
+                  type="button"
+                  disabled={tradeBusy}
+                  onClick={() => {
+                    setPreview(null);
+                    setPreviewStale(false);
+                    setApproved(false);
+                    setTradeResult(null);
+                    setTradeError(null);
+                  }}
+                  className="ui-btn border border-[var(--border)] text-[var(--muted)]"
+                >
+                  Cancel preview
+                </button>
+              </div>
             </div>
-          </div>
-        ) : (
-          <p className="text-sm text-[var(--muted)]">
-            Prepare a BUY/SELL from the watchlist to review the full order
-            preview. Submit stays disabled until you check the confirmation box
-            and all safety gates pass.
-          </p>
-        )}
+          ) : (
+            <div className="rounded-[var(--radius-sm)] border border-dashed border-[var(--border)] bg-[var(--panel-elevated)]/30 px-4 py-5 text-base text-[var(--muted)]">
+              Choose symbol / side / qty above, or use Prepare on a watchlist
+              row. Submit stays disabled until confirmation and all safety gates
+              pass.
+            </div>
+          )}
 
-        {tradeResult?.submitted && tradeResult.order && (
-          <div className="mt-4 border border-emerald-500/40 bg-emerald-500/10 px-3 py-3 text-sm">
-            <p className="font-semibold text-emerald-200">
-              Paper order submitted
-            </p>
-            <p className="mt-1 text-xs text-emerald-100/90">
-              {tradeResult.order.side.toUpperCase()} {tradeResult.order.qty}{" "}
-              {tradeResult.order.symbol} · {tradeResult.order.status} · id{" "}
-              <code className="font-mono">{tradeResult.order.id}</code>
-            </p>
-          </div>
-        )}
-      </Panel>
+          {tradeResult?.submitted && tradeResult.order && (
+            <div className="mt-5 rounded-[var(--radius-sm)] border border-emerald-500/40 bg-emerald-500/10 px-4 py-4 text-base">
+              <p className="font-semibold text-emerald-200">
+                Paper order submitted
+              </p>
+              <p className="mt-1.5 text-sm text-emerald-100/90">
+                {tradeResult.order.side.toUpperCase()} {tradeResult.order.qty}{" "}
+                {tradeResult.order.symbol} · {tradeResult.order.status}
+              </p>
+            </div>
+          )}
+        </Panel>
+      </div>
 
       <Panel title="Recent paper orders">
         {trades.length > 0 ? (
           <ScrollTable minWidthClass="min-w-[28rem] sm:min-w-[36rem]">
-            <table className="w-full text-left text-sm">
+            <table className="w-full text-left text-base">
               <thead>
-                <tr className="border-b border-[var(--border)] text-xs text-[var(--muted)] uppercase">
-                  <th className="py-2 pr-3 font-medium">Time</th>
-                  <th className="py-2 pr-3 font-medium">Symbol</th>
-                  <th className="py-2 pr-3 font-medium">Side</th>
-                  <th className="py-2 pr-3 font-medium">Qty</th>
-                  <th className="py-2 font-medium">Status</th>
+                <tr className="border-b border-[var(--border)] text-sm text-[var(--muted)]">
+                  <th className="py-3 pr-3 font-medium">Time</th>
+                  <th className="py-3 pr-3 font-medium">Symbol</th>
+                  <th className="py-3 pr-3 font-medium">Side</th>
+                  <th className="py-3 pr-3 font-medium">Qty</th>
+                  <th className="py-3 font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -774,17 +1402,19 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
                     key={t.id}
                     className="border-b border-[var(--border)]/50"
                   >
-                    <td className="py-2 pr-3 text-[var(--muted)]">
+                    <td className="py-3 pr-3 text-[var(--muted)]">
                       {formatTime(t.filledAt ?? t.submittedAt)}
                     </td>
-                    <td className="py-2 pr-3 font-semibold">{t.symbol}</td>
-                    <td className="py-2 pr-3">
+                    <td className="py-3 pr-3 text-lg font-semibold">
+                      {t.symbol}
+                    </td>
+                    <td className="py-3 pr-3">
                       <ActionBadge action={t.side} />
                     </td>
-                    <td className="py-2 pr-3 tabular-nums">
+                    <td className="py-3 pr-3 tabular-nums">
                       {t.filledQty || t.qty || "—"}
                     </td>
-                    <td className="py-2 text-[var(--muted)]">{t.status}</td>
+                    <td className="py-3 text-[var(--muted)]">{t.status}</td>
                   </tr>
                 ))}
               </tbody>
@@ -798,6 +1428,32 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
           </EmptyState>
         )}
       </Panel>
+
+      <AiCommandCenter
+        key={aiSeed ?? "ai-command"}
+        open={aiOpen}
+        onClose={closeAi}
+        orderExecutionEnabled={orderExecutionEnabled}
+        selectedSymbol={selectedSymbol}
+        buildContext={buildAiContext}
+        seedInstruction={aiSeed}
+        onSelectSymbol={(sym) => {
+          setSelectedSymbol(sym);
+          setExpanded((prev) => new Set(prev).add(sym));
+        }}
+        onPreparePreview={(symbol, side) => {
+          closeAi();
+          setManualSymbol(symbol);
+          setManualSide(side);
+          const d = decisions.find((x) => x.symbol === symbol);
+          void preparePaperTrade({
+            symbol,
+            side,
+            action: side === "buy" ? "BUY" : "SELL",
+            riskStatus: d?.riskStatus ?? "unknown",
+          });
+        }}
+      />
     </div>
   );
 }

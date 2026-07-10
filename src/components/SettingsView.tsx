@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { Panel } from "@/components/ui/Panel";
 import { BlockReasonList } from "@/components/ui/BlockReasonList";
 import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
+import { SafetyStrip } from "@/components/ui/SafetyStrip";
+import { useUiChrome } from "@/components/layout/UiChromeContext";
 import { fetchJson } from "@/lib/client/fetch-json";
 import {
   DEFAULT_UI_SETTINGS,
@@ -11,10 +13,14 @@ import {
   saveUiSettings,
   type UiSettings,
 } from "@/lib/client/ui-settings";
+import { aiStatusDisplayLabel } from "@/lib/client/block-reasons";
 import type { AppSettingsView } from "@/lib/settings/view";
+import type { AiHealthPayload } from "@/lib/dashboard-types";
 
 export function SettingsView() {
+  const { setViewMode } = useUiChrome();
   const [server, setServer] = useState<AppSettingsView | null>(null);
+  const [aiHealth, setAiHealth] = useState<AiHealthPayload | null>(null);
   const [ui, setUi] = useState<UiSettings>(() =>
     typeof window === "undefined" ? DEFAULT_UI_SETTINGS : loadUiSettings(),
   );
@@ -25,11 +31,16 @@ export function SettingsView() {
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetchJson<AppSettingsView>("/api/settings");
+        const [res, health] = await Promise.all([
+          fetchJson<AppSettingsView>("/api/settings"),
+          fetchJson<AiHealthPayload>("/api/ai/health").catch(() => null),
+        ]);
         if (cancelled) return;
         setServer(res);
+        setAiHealth(health);
         setUi((prev) => ({
           ...prev,
+          ...loadUiSettings(),
           watchlistDraft: res.watchlistEnv,
           maxTradeAmount: res.maxTradeAmount,
           maxDailyPaperTrades: res.maxDailyPaperTrades,
@@ -51,21 +62,28 @@ export function SettingsView() {
 
   function saveDraft() {
     saveUiSettings({ ...ui, preferExecutionEnabled: false });
+    setViewMode(ui.viewMode);
     setSavedMsg(
-      "UI draft saved locally. Server safety gates still use .env.local — drafts do not enable live or automatic trading.",
+      "UI preferences saved locally. Server safety gates still use .env.local — drafts do not enable live or automatic trading.",
     );
   }
 
+  const inputClass =
+    "rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)] px-3 py-2 text-base";
+
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <div>
-        <h1 className="font-[family-name:var(--font-display)] text-2xl tracking-tight">
-          Settings
-        </h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">
-          Paper trading preferences. Live trading and auto-trading stay blocked.
+        <h1 className="h1">Settings</h1>
+        <p className="mt-2 text-base text-[var(--muted)]">
+          Local preferences for the paper control room. Live and auto-trading
+          stay blocked.
         </p>
       </div>
+
+      <SafetyStrip
+        orderExecutionEnabled={server?.orderExecutionEnabled ?? false}
+      />
 
       <PaperOnlyBanner detail="execution requires ENABLE_PAPER_ORDER_EXECUTION in .env.local" />
 
@@ -81,6 +99,7 @@ export function SettingsView() {
             "Stale quote",
             "Wide spread",
           ]}
+          layout="inline"
         />
       </div>
 
@@ -103,6 +122,17 @@ export function SettingsView() {
             </div>
             <div>
               <dt className="text-xs uppercase text-[var(--muted)]">
+                AI provider
+              </dt>
+              <dd className="mt-1 font-semibold">
+                {aiStatusDisplayLabel(aiHealth?.statusLabel)}
+                {aiHealth?.ollama.model
+                  ? ` · ${aiHealth.ollama.model}`
+                  : ""}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-[var(--muted)]">
                 Trading endpoint
               </dt>
               <dd className="mt-1 font-mono text-xs">{server.tradingEndpoint}</dd>
@@ -118,12 +148,6 @@ export function SettingsView() {
                 Automatic trading
               </dt>
               <dd className="mt-1 text-rose-200">Blocked</dd>
-            </div>
-            <div>
-              <dt className="text-xs uppercase text-[var(--muted)]">
-                Asset class
-              </dt>
-              <dd className="mt-1">U.S. equities only</dd>
             </div>
             <div>
               <dt className="text-xs uppercase text-[var(--muted)]">
@@ -147,73 +171,49 @@ export function SettingsView() {
         </ul>
       </Panel>
 
-      <Panel title="UI draft (local only)">
+      <Panel title="UI preferences (local only)">
         <p className="mb-3 text-xs text-[var(--muted)]">
-          These fields help you draft preferences. Changing them here does{" "}
-          <strong>not</strong> override server env gates. Update{" "}
-          <code className="font-mono">.env.local</code> and restart the app for
-          watchlist / limits / execution to take effect.
+          These fields save to your browser. They do <strong>not</strong>{" "}
+          override server env gates. Update{" "}
+          <code className="font-mono">.env.local</code> and restart for
+          watchlist / limits / execution to take effect on the server.
         </p>
         <div className="grid gap-4 text-sm sm:grid-cols-2">
           <label className="flex flex-col gap-1 sm:col-span-2">
             <span className="text-xs uppercase text-[var(--muted)]">
-              Watchlist (comma-separated U.S. stocks)
+              Watchlist draft (comma-separated U.S. stocks)
             </span>
             <input
               value={ui.watchlistDraft}
               onChange={(e) =>
                 setUi((s) => ({ ...s, watchlistDraft: e.target.value }))
               }
-              className="border border-[var(--border)] bg-[var(--panel-elevated)] px-2 py-1.5 font-mono text-xs"
+              className={`${inputClass} font-mono text-xs`}
             />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs uppercase text-[var(--muted)]">
-              Max trade amount ($)
+              Default quantity
             </span>
             <input
               type="number"
               min={1}
-              value={ui.maxTradeAmount}
+              value={ui.defaultQuantity}
               onChange={(e) =>
                 setUi((s) => ({
                   ...s,
-                  maxTradeAmount: Math.max(1, Number(e.target.value) || 1),
-                }))
-              }
-              className="border border-[var(--border)] bg-[var(--panel-elevated)] px-2 py-1.5"
-            />
-            <span className="text-[10px] text-[var(--muted)]">
-              Server: MAX_PAPER_TRADE_NOTIONAL={server?.maxTradeAmount ?? "—"}
-            </span>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs uppercase text-[var(--muted)]">
-              Max daily paper trades
-            </span>
-            <input
-              type="number"
-              min={1}
-              value={ui.maxDailyPaperTrades}
-              onChange={(e) =>
-                setUi((s) => ({
-                  ...s,
-                  maxDailyPaperTrades: Math.max(
+                  defaultQuantity: Math.max(
                     1,
                     Math.floor(Number(e.target.value) || 1),
                   ),
                 }))
               }
-              className="border border-[var(--border)] bg-[var(--panel-elevated)] px-2 py-1.5"
+              className={inputClass}
             />
-            <span className="text-[10px] text-[var(--muted)]">
-              Server: MAX_DAILY_PAPER_TRADES=
-              {server?.maxDailyPaperTrades ?? "—"}
-            </span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs uppercase text-[var(--muted)]">
-              Minimum confidence (draft)
+              Minimum confidence (display filter draft)
             </span>
             <input
               type="number"
@@ -230,12 +230,32 @@ export function SettingsView() {
                   ),
                 }))
               }
-              className="border border-[var(--border)] bg-[var(--panel-elevated)] px-2 py-1.5"
+              className={inputClass}
             />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs uppercase text-[var(--muted)]">
-              Max spread allowed
+              Max trade amount ($)
+            </span>
+            <input
+              type="number"
+              min={1}
+              value={ui.maxTradeAmount}
+              onChange={(e) =>
+                setUi((s) => ({
+                  ...s,
+                  maxTradeAmount: Math.max(1, Number(e.target.value) || 1),
+                }))
+              }
+              className={inputClass}
+            />
+            <span className="text-[10px] text-[var(--muted)]">
+              Server: MAX_PAPER_TRADE_NOTIONAL={server?.maxTradeAmount ?? "—"}
+            </span>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs uppercase text-[var(--muted)]">
+              Max spread (draft)
             </span>
             <input
               type="number"
@@ -249,7 +269,7 @@ export function SettingsView() {
                   maxSpreadPct: Math.max(0.001, Number(e.target.value) || 0.01),
                 }))
               }
-              className="border border-[var(--border)] bg-[var(--panel-elevated)] px-2 py-1.5"
+              className={inputClass}
             />
             <span className="text-[10px] text-[var(--muted)]">
               Server hold threshold:{" "}
@@ -258,23 +278,100 @@ export function SettingsView() {
                 : "—"}
             </span>
           </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs uppercase text-[var(--muted)]">
+              Max daily paper trades (draft)
+            </span>
+            <input
+              type="number"
+              min={1}
+              value={ui.maxDailyPaperTrades}
+              onChange={(e) =>
+                setUi((s) => ({
+                  ...s,
+                  maxDailyPaperTrades: Math.max(
+                    1,
+                    Math.floor(Number(e.target.value) || 1),
+                  ),
+                }))
+              }
+              className={inputClass}
+            />
+          </label>
         </div>
 
-        <div className="mt-4 border border-[var(--border)] bg-[var(--background)]/40 p-3">
-          <p className="text-sm font-semibold text-amber-100">
+        <div className="mt-4 grid gap-2 text-base sm:grid-cols-3">
+          <label className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] px-3.5 py-3">
+            <input
+              type="radio"
+              name="viewMode"
+              checked={ui.viewMode === "simple"}
+              onChange={() => {
+                setUi((s) => ({ ...s, viewMode: "simple" }));
+                setViewMode("simple");
+              }}
+            />
+            Simple view
+          </label>
+          <label className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] px-3.5 py-3">
+            <input
+              type="radio"
+              name="viewMode"
+              checked={ui.viewMode === "advanced"}
+              onChange={() => {
+                setUi((s) => ({ ...s, viewMode: "advanced" }));
+                setViewMode("advanced");
+              }}
+            />
+            Advanced view
+          </label>
+          <label className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] px-3.5 py-3">
+            <input
+              type="checkbox"
+              checked={ui.compactScores}
+              onChange={(e) =>
+                setUi((s) => ({ ...s, compactScores: e.target.checked }))
+              }
+            />
+            Compact score badges
+          </label>
+          <label className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] px-3.5 py-3">
+            <input
+              type="checkbox"
+              checked={ui.showNewsColumn}
+              onChange={(e) =>
+                setUi((s) => ({ ...s, showNewsColumn: e.target.checked }))
+              }
+            />
+            Prefer news column
+          </label>
+          <label className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] px-3.5 py-3">
+            <input
+              type="checkbox"
+              checked={ui.showTrendVolume}
+              onChange={(e) =>
+                setUi((s) => ({ ...s, showTrendVolume: e.target.checked }))
+              }
+            />
+            Prefer trend / volume
+          </label>
+        </div>
+
+        <div className="mt-4 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--background)]/40 p-4">
+          <p className="text-base font-semibold text-amber-100">
             Execution toggle
           </p>
-          <p className="mt-1 text-xs text-[var(--muted)]">
+          <p className="mt-1.5 text-sm text-[var(--muted)]">
             This UI cannot turn execution on. Current server state:{" "}
             <strong className="text-amber-200">
               {server?.orderExecutionEnabled ? "ON (paper)" : "OFF"}
             </strong>
-            . To enable manual paper submits, set{" "}
+            . Use{" "}
             <code className="font-mono">ENABLE_PAPER_ORDER_EXECUTION=true</code>{" "}
-            in <code className="font-mono">.env.local</code> and restart. Live
-            trading remains blocked.
+            in <code className="font-mono">.env.local</code> only. Live trading
+            remains blocked.
           </p>
-          <label className="mt-3 flex items-start gap-2 text-sm opacity-60">
+          <label className="mt-3 flex items-start gap-2 text-base opacity-60">
             <input type="checkbox" checked={false} disabled readOnly />
             <span>
               Enable paper order execution (disabled in UI — use .env.local
@@ -287,13 +384,25 @@ export function SettingsView() {
           <button
             type="button"
             onClick={saveDraft}
-            className="border border-amber-500/50 bg-amber-500/15 px-3 py-1.5 text-sm text-amber-50"
+            className="ui-btn border border-amber-500/50 bg-amber-500/15 text-amber-50"
           >
-            Save UI draft
+            Save UI preferences
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setUi({ ...DEFAULT_UI_SETTINGS });
+              saveUiSettings({ ...DEFAULT_UI_SETTINGS });
+              setViewMode(DEFAULT_UI_SETTINGS.viewMode);
+              setSavedMsg("Reset to defaults (local only).");
+            }}
+            className="ui-btn border border-[var(--border)] text-[var(--muted)]"
+          >
+            Reset defaults
           </button>
         </div>
         {savedMsg && (
-          <p className="mt-2 text-xs text-emerald-200/90">{savedMsg}</p>
+          <p className="mt-2 text-sm text-emerald-200/90">{savedMsg}</p>
         )}
       </Panel>
     </div>

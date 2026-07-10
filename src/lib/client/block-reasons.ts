@@ -80,3 +80,24 @@ export function blockTone(kind: BlockReasonKind): string {
   }
   return "border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--muted)]";
 }
+
+/** Drop kinds already shown as page-level banners so rows stay compact. */
+export function withoutGlobalBlockKinds(
+  reasons: string[],
+  opts: { marketClosed?: boolean; executionOff?: boolean },
+): string[] {
+  const exclude = new Set<BlockReasonKind>();
+  if (opts.marketClosed) exclude.add("market_closed");
+  if (opts.executionOff) exclude.add("execution_off");
+  if (exclude.size === 0) return uniqueBlockLabels(reasons);
+  return uniqueBlockLabels(reasons).filter(
+    (label) => !exclude.has(classifyBlockText(label)),
+  );
+}
+
+export function aiStatusDisplayLabel(
+  statusLabel: "heuristic" | "connected" | "fallback" | string | null | undefined,
+): string {
+  if (statusLabel === "connected") return "AI: Ollama";
+  return "AI fallback: heuristic";
+}

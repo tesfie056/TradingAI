@@ -5,6 +5,7 @@ import { Panel } from "@/components/ui/Panel";
 import { ActionBadge } from "@/components/ui/badges";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
+import { SafetyStrip } from "@/components/ui/SafetyStrip";
 import { ScrollTable } from "@/components/ui/ScrollTable";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { formatTime } from "@/lib/format";
@@ -15,9 +16,9 @@ function BucketTable({ title, rows }: { title: string; rows: AccuracyBucket[] })
   return (
     <Panel title={title}>
       <ScrollTable minWidthClass="min-w-[18rem]">
-        <table className="w-full text-left text-sm">
+        <table className="w-full text-left text-base">
           <thead>
-            <tr className="border-b border-[var(--border)] text-xs text-[var(--muted)] uppercase">
+            <tr className="border-b border-[var(--border)] text-sm text-[var(--muted)]">
               <th className="py-2 pr-2 font-medium">Key</th>
               <th className="py-2 pr-2 font-medium">Total</th>
               <th className="py-2 pr-2 font-medium">Accuracy</th>
@@ -99,17 +100,17 @@ export function PerformanceView() {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <h1 className="font-[family-name:var(--font-display)] text-2xl tracking-tight">
-          Performance
-        </h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">
+        <h1 className="h1">Performance</h1>
+        <p className="mt-2 text-base text-[var(--muted)]">
           Paper estimates only — decisions are scored without placing orders.
         </p>
       </div>
 
+      <SafetyStrip orderExecutionEnabled={false} />
+
       <PaperOnlyBanner detail="estimated gain/loss is not real P&L" />
 
-      <div className="grid gap-3 sm:grid-cols-3 text-sm">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
         <Panel>
           <div className="text-xs uppercase tracking-wide text-[var(--muted)]">
             Decisions logged

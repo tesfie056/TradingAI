@@ -7,7 +7,6 @@ import {
   summarizePerformance,
 } from "@/lib/ai/history";
 import { updateDecisionOutcomes } from "@/lib/performance/update-outcomes";
-import { runSimpleBacktest } from "@/lib/performance/backtest";
 import {
   getAccount,
   getLatestBars,
@@ -63,6 +62,8 @@ export async function loadDashboardData(): Promise<DashboardData> {
     const { bySymbol: newsBySymbol, aiStatus } = await analyzeWatchlistNews(
       symbols,
       [...newsResult.items],
+      // SSR must stay fast — Ollama enrichment happens on client refresh /api routes.
+      { mode: "heuristic" },
     );
 
     const decisions = generateWatchlistDecisions({
@@ -81,16 +82,13 @@ export async function loadDashboardData(): Promise<DashboardData> {
     await appendDecisionHistory(decisions, {
       aiProvider: aiStatus.activeProvider,
     });
-    await updateDecisionOutcomes(120);
+    // Outcomes update can wait — do not block first paint on bar fetches.
+    void updateDecisionOutcomes(120).catch(() => undefined);
     await pruneDecisionHistory();
     const performanceHistory = await readPerformanceHistory(40);
     const performanceSummary = summarizePerformance(performanceHistory);
-    const backtest = await runSimpleBacktest({
-      symbols,
-      lookbackBars: 60,
-      step: 8,
-      forwardBars: 6,
-    });
+    // Backtest is its own page — skip on Control Room SSR.
+    const backtest = null;
     const ollamaHealth = await checkOllamaHealth();
     const requestedAi = getAiProviderName();
     const orderExecutionEnabled = isPaperOrderExecutionEnabled();

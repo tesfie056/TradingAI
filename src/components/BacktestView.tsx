@@ -5,6 +5,7 @@ import { Panel } from "@/components/ui/Panel";
 import { ActionBadge } from "@/components/ui/badges";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
+import { SafetyStrip } from "@/components/ui/SafetyStrip";
 import { ScrollTable } from "@/components/ui/ScrollTable";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { formatTime } from "@/lib/format";
@@ -57,14 +58,14 @@ export function BacktestView() {
   return (
     <div className="flex flex-col gap-5">
       <div>
-        <h1 className="font-[family-name:var(--font-display)] text-2xl tracking-tight">
-          Backtest
-        </h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">
+        <h1 className="h1">Backtest</h1>
+        <p className="mt-2 text-base text-[var(--muted)]">
           Replay stock decision logic on historical 5-minute bars. Never places
           orders.
         </p>
       </div>
+
+      <SafetyStrip orderExecutionEnabled={false} />
 
       <PaperOnlyBanner detail="simulation never places orders" />
 

@@ -46,6 +46,14 @@ export function isPaperOrderExecutionEnabled(): boolean {
   return process.env.ENABLE_PAPER_ORDER_EXECUTION === "true";
 }
 
+/**
+ * When false (default), the AI Assistant stays trading-dashboard focused
+ * and declines unrelated general chat.
+ */
+export function isGeneralAiModeEnabled(): boolean {
+  return process.env.GENERAL_AI_MODE === "true";
+}
+
 /** Max estimated USD notional per manual paper trade (default $500). */
 export function getMaxPaperTradeNotional(): number {
   const raw = process.env.MAX_PAPER_TRADE_NOTIONAL;

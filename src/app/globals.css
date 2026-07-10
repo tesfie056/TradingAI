@@ -1,13 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0c1117;
-  --foreground: #e8edf4;
-  --muted: #8b97a8;
+  --background: #0b1016;
+  --foreground: #eef2f7;
+  --muted: #93a0b2;
   --panel: #121a24;
-  --panel-elevated: #182231;
-  --border: #243041;
+  --panel-elevated: #1a2433;
+  --border: #2a384c;
   --accent: #d4a017;
+  --radius: 14px;
+  --radius-sm: 10px;
 }
 
 @theme inline {
@@ -19,20 +21,136 @@
 
 body {
   background:
-    radial-gradient(1200px 600px at 10% -10%, #1a2a3d 0%, transparent 55%),
-    radial-gradient(900px 500px at 100% 0%, #2a2210 0%, transparent 50%),
+    radial-gradient(1100px 560px at 8% -8%, #1a2a3d 0%, transparent 55%),
+    radial-gradient(900px 480px at 100% 0%, #2a2210 0%, transparent 48%),
     var(--background);
   color: var(--foreground);
   font-family: var(--font-body), system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
   min-height: 100%;
 }
 
-/* Keep dense tables readable when horizontally scrolled on small screens */
+h1,
+.h1 {
+  font-family: var(--font-display), Georgia, serif;
+  font-size: clamp(1.75rem, 2.4vw, 2.25rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+h2,
+.h2 {
+  font-size: 1.125rem;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+p,
+.body {
+  font-size: 1rem;
+}
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    opacity 160ms ease;
+}
+
+.ui-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ui-card {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border-radius: var(--radius);
+  padding: 1.15rem 1.25rem;
+}
+
 table {
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.98rem;
 }
 
 th,
 td {
-  vertical-align: top;
+  vertical-align: middle;
+}
+
+th {
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+}
+
+/* Smooth watchlist expand / collapse */
+.watchlist-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 240ms ease,
+    opacity 200ms ease;
+}
+
+.watchlist-expand[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.watchlist-expand__inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .watchlist-expand {
+    transition: none;
+  }
+}
+
+@keyframes paper-preview-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.paper-preview-enter {
+  animation: paper-preview-in 220ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paper-preview-enter {
+    animation: none;
+  }
+}
+
+.confidence-bar {
+  height: 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+  overflow: hidden;
+}
+
+.confidence-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #c99212, #e0b84a);
 }

@@ -15,7 +15,9 @@
     "verify:phase4": "npx --yes tsx scripts/verify-phase4.ts",
     "verify:phase5": "npx --yes tsx scripts/verify-phase5.ts",
     "verify:phase6": "npx --yes tsx scripts/verify-phase6.ts",
-    "verify:phase6.5": "npx --yes tsx scripts/verify-phase6.5.ts"
+    "verify:phase6.5": "npx --yes tsx scripts/verify-phase6.5.ts",
+    "verify:ai-command": "npx --yes tsx scripts/verify-ai-command.ts",
+    "verify:paper-blocks": "npx --yes tsx scripts/verify-paper-blocks.ts"
   },
   "dependencies": {
     "next": "16.2.10",

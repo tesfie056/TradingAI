@@ -43,10 +43,12 @@ function groupItems(
 
 /**
  * Aggregate + optionally enrich with Ollama/heuristic AI interpretation.
+ * mode "heuristic" = fast (SSR). mode "auto" = Ollama with short timeout + cache.
  */
 export async function analyzeWatchlistNews(
   symbols: string[],
   items: NewsItem[],
+  opts?: { mode?: "auto" | "heuristic" },
 ): Promise<{
   bySymbol: Record<string, SymbolNewsAnalysis>;
   aiStatus: AiProviderStatus;
@@ -56,6 +58,7 @@ export async function analyzeWatchlistNews(
     await interpretWatchlistNews({
       symbols,
       itemsBySymbol: grouped,
+      mode: opts?.mode ?? "auto",
     });
 
   const bySymbol: Record<string, SymbolNewsAnalysis> = {};

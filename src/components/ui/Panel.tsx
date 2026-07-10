@@ -4,19 +4,26 @@ export function Panel({
   title,
   children,
   className = "",
+  action,
 }: {
   title?: string;
   children: ReactNode;
   className?: string;
+  action?: ReactNode;
 }) {
   return (
-    <section
-      className={`flex flex-col gap-3 border border-[var(--border)] bg-[var(--panel)] p-4 ${className}`}
-    >
-      {title ? (
-        <h2 className="text-sm font-semibold tracking-wide text-[var(--muted)] uppercase">
-          {title}
-        </h2>
+    <section className={`ui-card flex flex-col gap-4 ${className}`}>
+      {title || action ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {title ? (
+            <h2 className="text-base font-semibold tracking-tight text-[var(--foreground)] sm:text-lg">
+              {title}
+            </h2>
+          ) : (
+            <span />
+          )}
+          {action}
+        </div>
       ) : null}
       {children}
     </section>

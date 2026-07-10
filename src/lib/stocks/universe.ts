@@ -38,13 +38,19 @@ export function isBlockedNonStockSymbol(symbol: string): boolean {
   return false;
 }
 
-/** Keep only plausible U.S. equity tickers. */
+/** Keep only plausible U.S. equity tickers (unique, uppercase, order preserved). */
 export function filterUsStockSymbols(symbols: string[]): string[] {
-  return symbols.filter((s) => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of symbols) {
     const symbol = s.trim().toUpperCase();
-    if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(symbol)) return false;
-    return !isBlockedNonStockSymbol(symbol);
-  });
+    if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(symbol)) continue;
+    if (isBlockedNonStockSymbol(symbol)) continue;
+    if (seen.has(symbol)) continue;
+    seen.add(symbol);
+    out.push(symbol);
+  }
+  return out;
 }
 
 export const MARKET_BENCHMARK_SYMBOLS = ["SPY", "QQQ"] as const;

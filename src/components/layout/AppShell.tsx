@@ -3,7 +3,12 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { StatusBar } from "@/components/layout/StatusBar";
+import {
+  UiChromeProvider,
+  useUiChrome,
+} from "@/components/layout/UiChromeContext";
 import { fetchJson } from "@/lib/client/fetch-json";
+import { aiStatusDisplayLabel } from "@/lib/client/block-reasons";
 import type {
   AiHealthPayload,
   NewsPayload,
@@ -23,14 +28,15 @@ type ShellStatus = {
 const FALLBACK: ShellStatus = {
   orderExecutionEnabled: false,
   marketOpen: null,
-  aiProvider: "—",
+  aiProvider: "AI fallback: heuristic",
   newsProvider: "—",
   safetyOk: false,
   safetyLabel: "checking",
 };
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+function AppShellInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { viewMode, toggleViewMode, openAi } = useUiChrome();
   const [status, setStatus] = useState<ShellStatus>(FALLBACK);
 
   useEffect(() => {
@@ -55,8 +61,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             ai?.orderExecutionEnabled ??
             false,
           marketOpen: clock?.clock?.isOpen ?? null,
-          aiProvider:
+          aiProvider: aiStatusDisplayLabel(
             ai?.statusLabel ?? news?.aiStatus?.activeProvider ?? "heuristic",
+          ),
           newsProvider: news?.provider ?? "mock",
           safetyOk: safety?.ok ?? false,
           safetyLabel: safety?.ok
@@ -84,10 +91,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         newsProvider={status.newsProvider}
         safetyOk={status.safetyOk}
         safetyLabel={status.safetyLabel}
+        viewMode={viewMode}
+        onToggleViewMode={toggleViewMode}
+        onAskAi={() => openAi()}
       />
-      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-3 py-5 sm:px-6 sm:py-6">
+      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
         {children}
       </main>
     </div>
+  );
+}
+
+export function AppShell({ children }: { children: React.ReactNode }) {
+  return (
+    <UiChromeProvider>
+      <AppShellInner>{children}</AppShellInner>
+    </UiChromeProvider>
   );
 }

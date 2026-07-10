@@ -73,7 +73,14 @@ import {
   type WatchlistFilters,
   type WatchlistViewRow,
 } from "@/lib/client/watchlist-filters";
-import { loadUiSettings, addLocalWatchlistSymbol, getLocalWatchlistSymbols, subscribeUiSettings } from "@/lib/client/ui-settings";
+import {
+  addLocalWatchlistSymbol,
+  getDefaultQuantityServerSnapshot,
+  getDefaultQuantitySnapshot,
+  getLocalWatchlistSymbolsServerSnapshot,
+  getLocalWatchlistSymbolsSnapshot,
+  subscribeUiSettings,
+} from "@/lib/client/ui-settings";
 import type { AiCommandRequest } from "@/lib/ai/command-types";
 import type { SymbolNewsAnalysis } from "@/lib/news/types";
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
@@ -246,13 +253,13 @@ export function ControlRoom({ initialData }: { initialData: DashboardData }) {
 
   const storedDefaultQty = useSyncExternalStore(
     subscribeUiSettings,
-    () => loadUiSettings().defaultQuantity,
-    () => 1,
+    getDefaultQuantitySnapshot,
+    getDefaultQuantityServerSnapshot,
   );
   const localWatchlist = useSyncExternalStore(
     subscribeUiSettings,
-    getLocalWatchlistSymbols,
-    () => [],
+    getLocalWatchlistSymbolsSnapshot,
+    getLocalWatchlistSymbolsServerSnapshot,
   );
   const [tradeQtyOverride, setTradeQtyOverride] = useState<number | null>(null);
   const tradeQty = tradeQtyOverride ?? storedDefaultQty;

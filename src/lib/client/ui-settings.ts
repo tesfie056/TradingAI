@@ -53,7 +53,41 @@ export function subscribeUiSettings(onStoreChange: () => void): () => void {
 }
 
 function emitUiSettingsChange(): void {
+  cachedWatchlistDraft = null;
+  cachedWatchlistSymbols = EMPTY_WATCHLIST;
+  cachedDefaultQuantity = null;
   for (const listener of uiSettingsListeners) listener();
+}
+
+/** Stable empty snapshot for SSR / useSyncExternalStore getServerSnapshot. */
+const EMPTY_WATCHLIST: string[] = [];
+const SERVER_DEFAULT_QTY = 1;
+
+let cachedWatchlistDraft: string | null = null;
+let cachedWatchlistSymbols: string[] = EMPTY_WATCHLIST;
+let cachedDefaultQuantity: number | null = null;
+
+export function getLocalWatchlistSymbolsSnapshot(): string[] {
+  const draft = loadUiSettings().watchlistDraft;
+  if (cachedWatchlistDraft === draft) return cachedWatchlistSymbols;
+  cachedWatchlistDraft = draft;
+  cachedWatchlistSymbols = parseWatchlistDraft(draft);
+  return cachedWatchlistSymbols;
+}
+
+export function getLocalWatchlistSymbolsServerSnapshot(): string[] {
+  return EMPTY_WATCHLIST;
+}
+
+export function getDefaultQuantitySnapshot(): number {
+  const qty = loadUiSettings().defaultQuantity;
+  if (cachedDefaultQuantity === qty) return cachedDefaultQuantity;
+  cachedDefaultQuantity = qty;
+  return qty;
+}
+
+export function getDefaultQuantityServerSnapshot(): number {
+  return SERVER_DEFAULT_QTY;
 }
 
 export function loadUiSettings(): UiSettings {

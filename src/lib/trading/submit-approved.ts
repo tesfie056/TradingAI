@@ -32,6 +32,7 @@ import {
   type V1LifecycleTrade,
 } from "@/lib/trading/v1-lifecycle";
 import { V1_STRATEGY_VERSION } from "@/lib/strategy/v1-simple-long";
+import { recordLearningDecision } from "@/lib/learning/record";
 
 export type SubmitApprovedResult =
   | {
@@ -147,6 +148,37 @@ export async function submitRiskApprovedEntry(input: {
     error: null,
   });
 
+  const decisionId = `risk_${proposal.symbol}_${Date.now().toString(36)}`;
+  void recordLearningDecision({
+    decisionId,
+    eventType: risk.approved ? "proposal" : "rejection",
+    symbol: proposal.symbol,
+    confidence: proposal.confidence,
+    isMarketOpen: input.marketOpen,
+    proposal: {
+      proposedEntry: proposal.proposedEntry,
+      stopLoss: proposal.stopLoss,
+      takeProfit: proposal.takeProfit,
+      plannedRisk: null,
+      plannedReward: null,
+      riskRewardRatio:
+        proposal.stopLoss && proposal.takeProfit && proposal.proposedEntry
+          ? Math.abs(proposal.takeProfit - proposal.proposedEntry) /
+            Math.max(
+              1e-9,
+              Math.abs(proposal.proposedEntry - proposal.stopLoss),
+            )
+          : null,
+      direction: proposal.direction,
+    },
+    risk: {
+      approved: risk.approved,
+      code: risk.code,
+      reason: risk.reason,
+    },
+    rejectionReason: risk.approved ? null : risk.reason,
+  });
+
   if (!risk.approved) {
     return {
       ok: false,
@@ -238,6 +270,15 @@ export async function submitRiskApprovedEntry(input: {
       alpacaOrderId: null,
       error: submitted.reason,
     });
+    void recordLearningDecision({
+      decisionId: `${decisionId}_broker_reject`,
+      eventType: "rejection",
+      symbol: proposal.symbol,
+      confidence: proposal.confidence,
+      isMarketOpen: input.marketOpen,
+      rejectionReason: submitted.reason,
+      risk: { approved: true, code: submitted.code, reason: submitted.reason },
+    });
     return {
       ok: false,
       code: submitted.code,
@@ -270,6 +311,27 @@ export async function submitRiskApprovedEntry(input: {
     rejectionReason: null,
     alpacaOrderId: submitted.order.id,
     error: null,
+  });
+
+  void recordLearningDecision({
+    decisionId: `${decisionId}_order`,
+    eventType: "order",
+    symbol: proposal.symbol,
+    confidence: proposal.confidence,
+    isMarketOpen: input.marketOpen,
+    proposal: {
+      proposedEntry: proposal.proposedEntry,
+      stopLoss: proposal.stopLoss,
+      takeProfit: proposal.takeProfit,
+      plannedRisk: null,
+      plannedReward: null,
+      riskRewardRatio: null,
+      direction: proposal.direction,
+    },
+    risk: { approved: true, code: null, reason: null },
+    orderId: submitted.order.id,
+    orderStatus: submitted.order.status,
+    orderResult: "submitted",
   });
 
   return {

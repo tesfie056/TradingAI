@@ -31,6 +31,7 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/monitor", label: "Monitor" },
   { href: "/auto-trade", label: "Auto Trade" },
+  { href: "/strategy-lab", label: "Strategy Lab" },
   { href: "/watchlist", label: "Watchlist" },
   { href: "/trade", label: "Trade" },
   { href: "/assistant", label: "Assistant" },

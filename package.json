@@ -46,6 +46,11 @@
     "verify:runtime-settings": "npx --yes tsx scripts/verify-runtime-settings.ts",
     "verify:auto-trade-controls": "npx --yes tsx scripts/verify-auto-trade-controls.ts",
     "verify:auto-trade-modals": "npx --yes tsx scripts/verify-auto-trade-modals.ts",
+    "verify:learning-i1": "npx --yes tsx scripts/verify-learning-i1.ts",
+    "verify:learning-i2": "npx --yes tsx scripts/verify-learning-i2.ts",
+    "verify:learning-i3": "npx --yes tsx scripts/verify-learning-i3.ts",
+    "verify:learning-i4": "npx --yes tsx scripts/verify-learning-i4.ts",
+    "learning:download-history": "npx --yes tsx scripts/download-history.ts",
     "verify:small-account": "npx --yes tsx scripts/verify-small-account.ts"
   },
   "dependencies": {

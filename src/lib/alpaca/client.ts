@@ -65,7 +65,15 @@ async function tradingFetch<T>(
   return (await res.json()) as T;
 }
 
-async function dataFetch<T>(path: string): Promise<T> {
+async function sleep(ms: number) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Market-data GET with retry/backoff on 429 and transient 5xx.
+ * Does not place orders.
+ */
+async function dataFetch<T>(path: string, attempt = 0): Promise<T> {
   const { apiKey, secretKey } = getAlpacaCredentials();
   // Market data uses data.alpaca.markets (not a trading endpoint).
   const url = `${MARKET_DATA_BASE_URL.replace(/\/$/, "")}${path}`;
@@ -78,6 +86,13 @@ async function dataFetch<T>(path: string): Promise<T> {
   if (!res.ok) {
     const body = await res.text();
     const detail = body.slice(0, 300).replace(/APCA-[A-Z-]+/gi, "[redacted]");
+    const retryable = res.status === 429 || res.status >= 500;
+    if (retryable && attempt < 5) {
+      const retryAfter = Number(res.headers.get("retry-after") || 0);
+      const backoff = Math.max(retryAfter * 1000, 400 * 2 ** attempt);
+      await sleep(backoff);
+      return dataFetch<T>(path, attempt + 1);
+    }
     throw new Error(
       `Alpaca data API ${res.status}: ${detail || res.statusText}`,
     );
@@ -228,15 +243,19 @@ export async function getLatestBars(
 
 export type BarTimeframe = "1Min" | "5Min" | "15Min" | "1Day";
 
+export type BarAdjustment = "raw" | "split" | "dividend" | "all";
+
 /**
  * Recent historical bars for trend / volatility / daily session questions.
  * Uses IEX feed (paper-friendly). Does not place orders.
+ * Single page — prefer getHistoricalBarsPaged for multi-month ranges.
  */
 export async function getRecentBars(
   symbols: string[],
   timeframe: BarTimeframe = "5Min",
   limit = 24,
   range?: { start?: string; end?: string },
+  options?: { adjustment?: BarAdjustment; feed?: "iex" | "sip" },
 ): Promise<Record<string, AlpacaBar[]>> {
   if (symbols.length === 0) return {};
 
@@ -244,8 +263,8 @@ export async function getRecentBars(
     symbols: symbols.join(","),
     timeframe,
     limit: String(limit),
-    adjustment: "raw",
-    feed: "iex",
+    adjustment: options?.adjustment ?? "raw",
+    feed: options?.feed ?? "iex",
     sort: "asc",
   });
   if (range?.start) params.set("start", range.start);
@@ -260,6 +279,74 @@ export async function getRecentBars(
     result[symbol] = data.bars?.[symbol] ?? [];
   }
   return result;
+}
+
+/**
+ * Paginated historical bars for one symbol (Alpaca next_page_token).
+ * Deduplicates by timestamp. IEX by default. Never places orders.
+ */
+export async function getHistoricalBarsPaged(input: {
+  symbol: string;
+  timeframe: BarTimeframe;
+  start: string;
+  end: string;
+  pageLimit?: number;
+  maxPages?: number;
+  adjustment?: BarAdjustment;
+  feed?: "iex" | "sip";
+  onPage?: (info: {
+    page: number;
+    barsThisPage: number;
+    totalSoFar: number;
+    pageToken: string | null;
+  }) => void;
+}): Promise<{ bars: AlpacaBar[]; pages: number; nextPageToken: string | null }> {
+  const symbol = input.symbol.toUpperCase();
+  const pageLimit = Math.min(input.pageLimit ?? 10000, 10000);
+  const maxPages = input.maxPages ?? 200;
+  const all: AlpacaBar[] = [];
+  const seen = new Set<string>();
+  let pageToken: string | null = null;
+  let pages = 0;
+
+  do {
+    const params = new URLSearchParams({
+      symbols: symbol,
+      timeframe: input.timeframe,
+      start: input.start,
+      end: input.end,
+      limit: String(pageLimit),
+      adjustment: input.adjustment ?? "raw",
+      feed: input.feed ?? "iex",
+      sort: "asc",
+    });
+    if (pageToken) params.set("page_token", pageToken);
+
+    const data = await dataFetch<{
+      bars?: Record<string, AlpacaBar[]>;
+      next_page_token?: string | null;
+    }>(`/v2/stocks/bars?${params}`);
+
+    const pageBars = data.bars?.[symbol] ?? [];
+    let added = 0;
+    for (const b of pageBars) {
+      if (seen.has(b.t)) continue;
+      seen.add(b.t);
+      all.push(b);
+      added += 1;
+    }
+    pages += 1;
+    pageToken = data.next_page_token ?? null;
+    input.onPage?.({
+      page: pages,
+      barsThisPage: added,
+      totalSoFar: all.length,
+      pageToken,
+    });
+    if (pages >= maxPages) break;
+  } while (pageToken);
+
+  return { bars: all, pages, nextPageToken: pageToken };
 }
 
 export type AlpacaAssetLookup = {

@@ -54,6 +54,7 @@ import {
   fetchMultiTimeframeBars,
 } from "@/lib/stocks/fetch-context";
 import { recordSignalDecision } from "@/lib/training/signal-loop";
+import { recordLearningDecision } from "@/lib/learning/record";
 import { getRiskTradingConfig } from "@/lib/config/risk-config";
 import { buildLongProposal } from "@/lib/trading/proposal";
 import { submitRiskApprovedEntry } from "@/lib/trading/submit-approved";
@@ -346,6 +347,19 @@ export async function processAutoTradesForScan(input: {
         skipCodes: ctx.eligibility.blockers.map((b) => b.code),
         reason: allReasons || primary?.message || "skipped",
         autoTradeDecisionId: skipped.id,
+      });
+      void recordLearningDecision({
+        decisionId: skipped.id,
+        eventType: "rejection",
+        symbol: opp.symbol,
+        confidence: opp.confidence,
+        isMarketOpen: input.marketOpen,
+        rejectionReason: allReasons || primary?.message || "skipped",
+        risk: {
+          approved: false,
+          code: primary?.code ?? "eligibility",
+          reason: primary?.message ?? allReasons,
+        },
       });
       result.decisions.push(skipped);
       result.skipped += 1;

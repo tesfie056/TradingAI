@@ -1,6 +1,8 @@
 /**
  * Auto Trade Controls + settings UX verification.
  * Run: npm run verify:auto-trade-controls
+ *
+ * Uses TRADINGAI_DATA_DIR isolation — never mutates production data/.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -24,8 +26,13 @@ import {
 } from "../src/lib/auto-trade/runtime-settings";
 import { deriveEngineControlSnapshot } from "../src/lib/auto-trade/runtime-settings/engine-state";
 import { DEFAULT_PAPER_SOAK_WATCHLIST } from "../src/lib/universe/paper-soak-watchlist";
+import { withTempTradingData } from "./lib/v1-harness/temp-data";
+
 async function main() {
   console.log("verify:auto-trade-controls starting…");
+  const temp = await withTempTradingData();
+  let failed = false;
+  try {
 
   const page = fs.readFileSync(
     path.join(
@@ -258,6 +265,13 @@ async function main() {
   console.log("✓ invalid state transitions rejected");
 
   console.log("verify:auto-trade-controls passed");
+  } catch (err) {
+    failed = true;
+    throw err;
+  } finally {
+    await resetRuntimeSettingsCacheForTests();
+    await temp.cleanup({ failed });
+  }
 }
 
 main().catch((e) => {

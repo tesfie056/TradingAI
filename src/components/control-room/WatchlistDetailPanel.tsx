@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { BlockReasonList } from "@/components/ui/BlockReasonList";
 import { ScoreBadges } from "@/components/ui/badges";
+import { AdvancedDetails } from "@/components/ui/AdvancedDetails";
 import { formatTime } from "@/lib/format";
 import type { AiDecision, DecisionHistoryEntry } from "@/lib/alpaca/types";
 import type { SymbolNewsAnalysis } from "@/lib/news/types";
@@ -18,7 +19,8 @@ export function WatchlistDetailPanel({
   onPrepare,
   compareWith,
   simple = true,
-  colSpan = 6,
+  colSpan = 5,
+  whyWaiting = [],
 }: {
   d: AiDecision;
   open: boolean;
@@ -30,6 +32,7 @@ export function WatchlistDetailPanel({
   compareWith?: AiDecision | null;
   simple?: boolean;
   colSpan?: number;
+  whyWaiting?: string[];
 }) {
   const canPrepare = canShowPreparePaperTrade(d);
   const headlines =
@@ -73,115 +76,135 @@ export function WatchlistDetailPanel({
                 )}
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <DetailBlock title="Technical">
-                  {d.explanation?.technical ?? "—"}
-                </DetailBlock>
-                <DetailBlock title="News">
-                  {d.explanation?.news ?? news?.explanation ?? "—"}
-                </DetailBlock>
-                <DetailBlock title="Market">
-                  {d.explanation?.market ??
-                    d.marketCondition?.explanation ??
-                    "—"}
-                </DetailBlock>
-                <DetailBlock title="Risk">
-                  {d.explanation?.risk ?? "—"}
-                </DetailBlock>
-              </div>
+              {!canPrepare && whyWaiting.length > 0 ? (
+                <div>
+                  <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+                    Why it is waiting
+                  </h3>
+                  <ul className="list-disc space-y-1 pl-5 text-sm text-zinc-300">
+                    {whyWaiting.slice(0, 6).map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
 
               <div className="rounded-[var(--radius-sm)] border border-[var(--border)]/80 bg-[var(--panel)]/50 p-4">
                 <h3 className="text-sm font-semibold text-amber-200/95">
-                  AI explanation
+                  Summary
                 </h3>
                 <p className="mt-2 text-base leading-relaxed">
-                  {d.explanation?.summary ?? d.reasons[0] ?? "—"}
+                  {d.explanation?.summary ?? d.reasons[0] ?? "No summary yet."}
                 </p>
               </div>
 
-              <div>
-                <h3 className="mb-2 text-sm font-semibold text-rose-200/90">
-                  Blocked reasons
-                </h3>
-                <BlockReasonList
-                  reasons={allBlockReasons}
-                  emptyLabel="None — gates clear for this symbol"
-                  layout="inline"
-                />
-              </div>
-
-              {!simple && (
-                <>
-                  <div>
-                    <h3 className="mb-2 text-sm font-semibold text-[var(--muted)]">
-                      Recent headlines
-                    </h3>
-                    {headlines.length > 0 ? (
-                      <ul className="list-disc space-y-1.5 pl-5 text-base text-[var(--foreground)]/85">
-                        {headlines.slice(0, 5).map((h) => (
-                          <li key={h}>{h}</li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-base text-[var(--muted)]">
-                        No headlines
-                      </p>
-                    )}
+              <AdvancedDetails
+                title="Technical indicators"
+                summary="Signal explanations, scores, and technical block reasons."
+              >
+                <div className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <DetailBlock title="Technical">
+                      {d.explanation?.technical ?? "Not available"}
+                    </DetailBlock>
+                    <DetailBlock title="News">
+                      {d.explanation?.news ?? news?.explanation ?? "Not available"}
+                    </DetailBlock>
+                    <DetailBlock title="Market">
+                      {d.explanation?.market ??
+                        d.marketCondition?.explanation ??
+                        "Not available"}
+                    </DetailBlock>
+                    <DetailBlock title="Risk">
+                      {d.explanation?.risk ?? "Not available"}
+                    </DetailBlock>
                   </div>
 
                   <div>
-                    <h3 className="mb-2 text-sm font-semibold text-[var(--muted)]">
-                      Recent decisions
+                    <h3 className="mb-2 text-sm font-semibold text-rose-200/90">
+                      Technical block reasons
                     </h3>
-                    {history.length > 0 ? (
-                      <ul className="space-y-2 text-base">
-                        {history.slice(0, 5).map((h, i) => (
-                          <li
-                            key={`${h.timestamp}-${i}`}
-                            className="flex flex-wrap gap-x-3 text-[var(--foreground)]/85"
-                          >
-                            <span className="text-[var(--muted)]">
-                              {formatTime(h.timestamp)}
-                            </span>
-                            <span className="font-semibold">{h.action}</span>
-                            <span className="tabular-nums">
-                              {(h.confidence * 100).toFixed(0)}%
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-base text-[var(--muted)]">
-                        No history yet
-                      </p>
-                    )}
+                    <BlockReasonList
+                      reasons={allBlockReasons}
+                      emptyLabel="None — gates clear for this symbol"
+                      layout="inline"
+                    />
                   </div>
 
-                  {d.scores && (
-                    <div>
-                      <h3 className="mb-2 text-sm font-semibold text-[var(--muted)]">
-                        Score breakdown
-                      </h3>
-                      <ScoreBadges scores={d.scores} />
-                    </div>
-                  )}
-
-                  {compareWith && compareWith.symbol !== d.symbol && (
-                    <div>
-                      <h3 className="mb-2 text-sm font-semibold text-amber-200/90">
-                        Compare · {d.symbol} vs {compareWith.symbol}
-                      </h3>
-                      <div className="grid gap-3 sm:grid-cols-2 text-base">
-                        <CompareCard label={d.symbol} decision={d} />
-                        <CompareCard
-                          label={compareWith.symbol}
-                          decision={compareWith}
-                        />
+                  {!simple && (
+                    <>
+                      <div>
+                        <h3 className="mb-2 text-sm font-semibold text-[var(--muted)]">
+                          Recent headlines
+                        </h3>
+                        {headlines.length > 0 ? (
+                          <ul className="list-disc space-y-1.5 pl-5 text-base text-[var(--foreground)]/85">
+                            {headlines.slice(0, 5).map((h) => (
+                              <li key={h}>{h}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-base text-[var(--muted)]">
+                            No headlines
+                          </p>
+                        )}
                       </div>
-                    </div>
+
+                      <div>
+                        <h3 className="mb-2 text-sm font-semibold text-[var(--muted)]">
+                          Recent decisions
+                        </h3>
+                        {history.length > 0 ? (
+                          <ul className="space-y-2 text-base">
+                            {history.slice(0, 5).map((h, i) => (
+                              <li
+                                key={`${h.timestamp}-${i}`}
+                                className="flex flex-wrap gap-x-3 text-[var(--foreground)]/85"
+                              >
+                                <span className="text-[var(--muted)]">
+                                  {formatTime(h.timestamp)}
+                                </span>
+                                <span className="font-semibold">{h.action}</span>
+                                <span className="tabular-nums">
+                                  {(h.confidence * 100).toFixed(0)}%
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-base text-[var(--muted)]">
+                            No history yet
+                          </p>
+                        )}
+                      </div>
+
+                      {d.scores && (
+                        <div>
+                          <h3 className="mb-2 text-sm font-semibold text-[var(--muted)]">
+                            Score breakdown
+                          </h3>
+                          <ScoreBadges scores={d.scores} />
+                        </div>
+                      )}
+
+                      {compareWith && compareWith.symbol !== d.symbol && (
+                        <div>
+                          <h3 className="mb-2 text-sm font-semibold text-amber-200/90">
+                            Compare · {d.symbol} vs {compareWith.symbol}
+                          </h3>
+                          <div className="grid gap-3 sm:grid-cols-2 text-base">
+                            <CompareCard label={d.symbol} decision={d} />
+                            <CompareCard
+                              label={compareWith.symbol}
+                              decision={compareWith}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
-                </>
-              )}
+                </div>
+              </AdvancedDetails>
             </div>
           </div>
         </div>

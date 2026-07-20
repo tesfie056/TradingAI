@@ -16,7 +16,9 @@ import type {
   MonitorOpportunity,
   MonitorStatus,
 } from "@/lib/monitor/types";
-import { Panel } from "@/components/ui/Panel";
+import { CompactStatusCard } from "@/components/ui/CompactStatusCard";
+import { ExpandableSection } from "@/components/ui/ExpandableSection";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { StatusDot } from "@/components/ui/SafetyStrip";
 import { AgentLiveStatus } from "@/components/monitor/AgentLiveStatus";
 
@@ -35,14 +37,59 @@ function statusTone(
   return "neutral";
 }
 
+function primaryMonitorMessage(input: {
+  status: MonitorStatus | null;
+  marketClosed: boolean;
+  scanning: boolean;
+}): { message: string; tone: "ok" | "warn" | "neutral" | "info"; detail: string } {
+  if (input.marketClosed) {
+    return {
+      message: "Market is closed",
+      tone: "neutral",
+      detail: "Monitoring can continue. Paper trading waits until the market opens.",
+    };
+  }
+  if (input.scanning || input.status?.status === "scanning") {
+    return {
+      message: "Scan in progress",
+      tone: "warn",
+      detail: "Checking the watchlist for paper-trade setups.",
+    };
+  }
+  if (input.status?.running) {
+    return {
+      message: "Monitor is active",
+      tone: "ok",
+      detail: "The agent is watching your watchlist. It never places orders.",
+    };
+  }
+  return {
+    message: "Monitor is stopped",
+    tone: "neutral",
+    detail: "Start monitoring or run a scan when you want fresh setups.",
+  };
+}
+
 export function MonitoringPanel() {
   const stream = useMonitorStream();
   const [localStatus, setLocalStatus] = useState<MonitorStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [logsOpen, setLogsOpen] = useState(false);
 
   const status = stream.status ?? localStatus;
+
+  async function refresh() {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await fetchJson<MonitorStatus>("/api/monitor");
+      setLocalStatus(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to refresh");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (stream.status || localStatus) return;
@@ -92,47 +139,123 @@ export function MonitoringPanel() {
   const marketClosed =
     top?.marketStatus === "closed" ||
     (top != null && primaryBlockReason(top) === "Market closed");
+  const primary = primaryMonitorMessage({
+    status,
+    marketClosed,
+    scanning: Boolean(status?.scanning || stream.scanning),
+  });
+
+  const stocksMonitored =
+    status?.stocksScanned || status?.scannedSymbols?.length || 0;
+  const compactTone =
+    primary.tone === "ok"
+      ? "ok"
+      : primary.tone === "warn"
+        ? "warn"
+        : status?.lastError || error
+          ? "bad"
+          : "neutral";
 
   return (
-    <div id="monitor" className="scroll-mt-24">
-      <Panel title="24/7 AI Monitoring Agent">
-        <p className="mb-3 text-sm text-[var(--muted)]">
-          Background worker scans your watchlist (SSE live updates — no page
-          refresh). Paper-only — monitoring never places orders directly.
-        </p>
+    <div id="monitor" className="scroll-mt-24 flex flex-col gap-4">
+      <CompactStatusCard
+        title="Monitoring status"
+        message={primary.message}
+        detail={primary.detail}
+        tone={compactTone}
+        metrics={[
+          {
+            label: "Status",
+            value: status?.running
+              ? status.status === "scanning"
+                ? "Scanning"
+                : "Running"
+              : "Stopped",
+          },
+          {
+            label: "Last scan",
+            value: status?.lastScanAt ? formatTime(status.lastScanAt) : "Never",
+          },
+          {
+            label: "Stocks monitored",
+            value: String(stocksMonitored),
+          },
+          {
+            label: "Errors",
+            value: error || status?.lastError ? "Attention" : "None",
+          },
+        ]}
+        action={
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={busy || status?.running}
+              onClick={() => void postAction("/api/monitor/start")}
+              className="ui-btn min-h-10 border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-sm font-medium text-emerald-100 disabled:opacity-50"
+            >
+              Start
+            </button>
+            <button
+              type="button"
+              disabled={busy || !status?.running}
+              onClick={() => void postAction("/api/monitor/stop")}
+              className="ui-btn min-h-10 border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--muted)] disabled:opacity-50"
+            >
+              Stop
+            </button>
+            <button
+              type="button"
+              disabled={busy || Boolean(status?.scanning)}
+              onClick={() => void postAction("/api/monitor/scan")}
+              className="ui-btn min-h-10 border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-sm font-medium text-amber-100 disabled:opacity-50"
+            >
+              {status?.scanning ? "Scanning…" : "Run scan"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void refresh()}
+              className="ui-btn min-h-10 border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--muted)] disabled:opacity-50"
+            >
+              Refresh
+            </button>
+          </div>
+        }
+        footer={
+          <>
+            <p className="mt-3 text-sm text-[var(--muted)]">
+              Monitoring controls
+              <InfoTip text="Scans your watchlist for setups. Monitoring never places orders." />
+            </p>
+            {error ? (
+              <p className="mt-3 rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
+                {error}
+              </p>
+            ) : null}
+            {status?.lastError ? (
+              <p className="mt-2 text-sm text-amber-100/90">
+                Last scan note: {status.lastError}
+              </p>
+            ) : null}
+            <MonitorNotifications notifications={notifications} />
+            <TopOpportunityCard
+              opportunity={top}
+              stocksScanned={stocksMonitored}
+            />
+          </>
+        }
+      />
 
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 ring-1 ${
-              stream.connected
-                ? "ring-emerald-500/40 text-emerald-100"
-                : "ring-[var(--border)]"
-            }`}
-          >
-            <StatusDot tone={stream.connected ? "ok" : "bad"} />
-            SSE {stream.connected ? "connected" : "reconnecting…"}
-          </span>
-          {stream.heartbeatAt ? (
-            <span>Heartbeat {formatTime(stream.heartbeatAt)}</span>
-          ) : null}
-          {status?.workerMode ? (
-            <span className="text-amber-100/90">Background worker</span>
-          ) : null}
-        </div>
-
-        <div className="mb-4">
-          <AgentLiveStatus />
-        </div>
-
-        <MonitorNotifications notifications={notifications} />
-
-        {marketClosed ? (
-          <p className="mt-2 rounded-[var(--radius-sm)] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-50">
-            Monitoring continues. Trading waits until market opens.
-          </p>
-        ) : null}
-
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <ExpandableSection
+        title="Scan details"
+        expandLabel="View scan details"
+        collapseLabel="Hide scan details"
+        tip={
+          <InfoTip text="Timing and counts from the latest watchlist scans." />
+        }
+        summary="Last scan, interval, stocks scanned, and setups found."
+      >
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <Stat
             label="Agent status"
             value={status?.status ?? "—"}
@@ -176,86 +299,56 @@ export function MonitoringPanel() {
             label="Active queue"
             value={String(status?.activeOpportunities ?? 0)}
           />
-          <Stat
-            label="Ollama"
-            value={
-              status?.ollamaAvailable == null
-                ? "—"
-                : status.ollamaAvailable
-                  ? "Available"
-                  : "Fallback"
-            }
-            tone={
-              status?.ollamaAvailable === true
-                ? "ok"
-                : status?.ollamaAvailable === false
-                  ? "warn"
-                  : "neutral"
-            }
-          />
         </div>
+      </ExpandableSection>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={busy || status?.running}
-            onClick={() => void postAction("/api/monitor/start")}
-            className="ui-btn border border-emerald-500/40 bg-emerald-500/10 text-emerald-100 disabled:opacity-50"
+      <ExpandableSection
+        title="Connection details"
+        expandLabel="View connection details"
+        collapseLabel="Hide connection details"
+        tip={
+          <InfoTip text="Live connection, auto-trade snapshot, and assistant availability." />
+        }
+        summary="Live updates, assistant availability, and auto-trade snapshot."
+      >
+        <div className="mb-4 flex flex-wrap gap-2 text-sm text-[var(--muted)]">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 ring-1 ${
+              stream.connected
+                ? "ring-emerald-500/40 text-emerald-100"
+                : "ring-[var(--border)]"
+            }`}
           >
-            Start monitoring
-          </button>
-          <button
-            type="button"
-            disabled={busy || !status?.running}
-            onClick={() => void postAction("/api/monitor/stop")}
-            className="ui-btn border border-[var(--border)] text-[var(--muted)] disabled:opacity-50"
-          >
-            Stop monitoring
-          </button>
-          <button
-            type="button"
-            disabled={busy || Boolean(status?.scanning)}
-            onClick={() => void postAction("/api/monitor/scan")}
-            className="ui-btn border border-amber-500/40 bg-amber-500/10 text-amber-100 disabled:opacity-50"
-          >
-            {status?.scanning ? "Scanning…" : "Run scan now"}
-          </button>
+            <StatusDot tone={stream.connected ? "ok" : "bad"} />
+            Live updates {stream.connected ? "connected" : "reconnecting…"}
+          </span>
+          {stream.heartbeatAt ? (
+            <span>Last heartbeat {formatTime(stream.heartbeatAt)}</span>
+          ) : null}
+          {status?.workerMode ? (
+            <span className="text-amber-100/90">Background worker active</span>
+          ) : null}
+          <span>
+            Assistant:{" "}
+            {status?.ollamaAvailable == null
+              ? "—"
+              : status.ollamaAvailable
+                ? "Available"
+                : "Using fallback"}
+          </span>
         </div>
+        <AgentLiveStatus />
+      </ExpandableSection>
 
-        {error ? (
-          <p className="mt-3 rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
-            {error}
-          </p>
-        ) : null}
-        {status?.lastError ? (
-          <p className="mt-2 text-sm text-amber-100/90">
-            Last scan note: {status.lastError}
-          </p>
-        ) : null}
-
-        <TopOpportunityCard
-          opportunity={top}
-          stocksScanned={
-            status?.stocksScanned || status?.scannedSymbols?.length || 0
-          }
-        />
-
-        <p className="mt-3 text-xs leading-relaxed text-[var(--muted)]">
-          The agent can detect setups 24/7, but stock orders are only allowed
-          when market/data/risk checks pass.
-        </p>
-
-        <div className="mt-3">
-          <button
-            type="button"
-            onClick={() => setLogsOpen((v) => !v)}
-            className="text-sm font-medium text-amber-100/90 underline-offset-2 hover:underline"
-          >
-            {logsOpen ? "Hide monitoring logs" : "Show monitoring logs"}
-          </button>
-          {logsOpen ? <MonitorLogList logs={logs} /> : null}
-        </div>
-      </Panel>
+      <ExpandableSection
+        title="Monitoring logs"
+        expandLabel="View monitoring logs"
+        collapseLabel="Hide monitoring logs"
+        tip={<InfoTip text="Recent monitor events for troubleshooting." />}
+        summary="Recent scan and agent log lines."
+      >
+        <MonitorLogList logs={logs} />
+      </ExpandableSection>
     </div>
   );
 }
@@ -311,7 +404,7 @@ export function MonitorNotifications({
 }) {
   if (notifications.length === 0) return null;
   return (
-    <ul className="flex flex-col gap-1.5">
+    <ul className="mt-4 flex flex-col gap-1.5">
       {notifications.slice(0, 4).map((n) => (
         <li
           key={n.id}
@@ -408,12 +501,6 @@ function TopOpportunityCard({
       <p className="mt-2 text-sm text-[var(--foreground)]/85">
         {opportunity.reason}
       </p>
-      <div className="mt-2 grid gap-1 text-xs text-[var(--muted)] sm:grid-cols-4">
-        <span>Tech {opportunity.technicalScore.toFixed(2)}</span>
-        <span>News {opportunity.newsScore.toFixed(2)}</span>
-        <span>Market {opportunity.marketScore.toFixed(2)}</span>
-        <span>Risk {opportunity.riskScore.toFixed(2)}</span>
-      </div>
 
       {marketClosed ? (
         <p className="mt-2 text-sm font-medium text-amber-100">
@@ -422,10 +509,8 @@ function TopOpportunityCard({
       ) : null}
 
       <p className="mt-2 text-xs leading-relaxed text-[var(--muted)]">
-        The agent can detect setups 24/7, but stock orders are only allowed when
-        market/data/risk checks pass. Score {opportunity.score.toFixed(2)} ·
-        conf {(opportunity.confidence * 100).toFixed(0)}% · market{" "}
-        {opportunity.marketStatus}.
+        Setups can be detected anytime, but paper orders still need market, data,
+        and risk checks to pass.
       </p>
     </div>
   );
@@ -434,11 +519,11 @@ function TopOpportunityCard({
 function MonitorLogList({ logs }: { logs: MonitorLogEntry[] }) {
   if (logs.length === 0) {
     return (
-      <p className="mt-2 text-sm text-[var(--muted)]">No monitor logs yet.</p>
+      <p className="text-sm text-[var(--muted)]">No monitor logs yet.</p>
     );
   }
   return (
-    <ul className="mt-2 max-h-48 space-y-1 overflow-y-auto text-xs">
+    <ul className="max-h-48 space-y-1 overflow-y-auto text-xs">
       {logs.map((l) => (
         <li
           key={l.id}

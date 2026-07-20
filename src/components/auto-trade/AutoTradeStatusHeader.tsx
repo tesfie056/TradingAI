@@ -1,7 +1,6 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Panel } from "@/components/ui/Panel";
 import { AutoTradeInfoTip } from "@/components/auto-trade/AutoTradeInfoTip";
 import { formatTime } from "@/lib/format";
 import { marketDataStatusLabel } from "@/lib/auto-trade/operator-blockers";
@@ -47,6 +46,10 @@ function Pill({
   );
 }
 
+/**
+ * Compact system connection details — shown under Strategy Information.
+ * Primary market/auto status lives on AutoTradeOverviewCard.
+ */
 export function AutoTradeStatusHeader({
   autoTradingOn,
   executionOn,
@@ -62,7 +65,11 @@ export function AutoTradeStatusHeader({
     marketOpen == null ? "Market Unknown" : marketOpen ? "Market Open" : "Market Closed";
 
   return (
-    <Panel title="System status" className="shadow-sm shadow-black/20">
+    <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-3 py-3">
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--muted)]">
+        Connection &amp; strategy
+        <AutoTradeInfoTip text="Broker connection, market data freshness, and the paper strategy in use." />
+      </p>
       {loading && !lastUpdatedAt ? (
         <p className="text-sm text-[var(--muted)]" role="status">
           Loading system status…
@@ -117,6 +124,6 @@ export function AutoTradeStatusHeader({
           </p>
         </>
       )}
-    </Panel>
+    </div>
   );
 }

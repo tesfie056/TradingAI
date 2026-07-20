@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { Panel } from "@/components/ui/Panel";
 import { ActionBadge, SentimentBadge } from "@/components/ui/badges";
+import { AdvancedDetails } from "@/components/ui/AdvancedDetails";
 import { BlockReasonList } from "@/components/ui/BlockReasonList";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
-import { SafetyStrip } from "@/components/ui/SafetyStrip";
+import { ExpandableSection } from "@/components/ui/ExpandableSection";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { ScrollTable } from "@/components/ui/ScrollTable";
 import { PaperOrdersTable } from "@/components/trades/PaperOrdersTable";
 import { fetchJson } from "@/lib/client/fetch-json";
@@ -31,7 +33,8 @@ type LogBundle = {
   orderExecutionEnabled: boolean;
 };
 
-type LogKind = "all" | "decisions" | "blocked" | "orders" | "ai" | "monitor";
+/** User-facing activity filter (maps onto existing data kinds). */
+type ActivityFilter = "all" | "trades" | "safety" | "system" | "errors";
 
 export function LogsView() {
   const [data, setData] = useState<LogBundle | null>(null);
@@ -40,7 +43,7 @@ export function LogsView() {
   const [query, setQuery] = useState("");
   const [symbol, setSymbol] = useState("ALL");
   const [blockFilter, setBlockFilter] = useState("ALL");
-  const [kind, setKind] = useState<LogKind>("all");
+  const [filter, setFilter] = useState<ActivityFilter>("trades");
   const [aiHistory, setAiHistory] = useState<StoredAiCommand[]>(() =>
     typeof window === "undefined" ? [] : loadAiCommandHistory(),
   );
@@ -187,8 +190,22 @@ export function LogsView() {
     });
   }, [data, symbol, query]);
 
+  const errorLogs = useMemo(() => {
+    return monitorFiltered.filter(
+      (log) => log.level === "error" || log.level === "warn",
+    );
+  }, [monitorFiltered]);
+
+  const showTrades = filter === "all" || filter === "trades";
+  const showSafety =
+    filter === "all" || filter === "safety" || filter === "errors";
+  const showDecisions = filter === "all" || filter === "trades";
+  /** Technical logs stay available (collapsed) on every filter mode. */
+  const techLogs = filter === "errors" ? errorLogs : monitorFiltered;
+  const showAiHistory = filter === "all" || filter === "system";
+
   if (loading) {
-    return <p className="text-sm text-[var(--muted)]">Loading logs…</p>;
+    return <p className="text-sm text-[var(--muted)]">Loading activity…</p>;
   }
   if (error) {
     return (
@@ -203,28 +220,26 @@ export function LogsView() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="h1">Logs</h1>
-        <p className="mt-2 text-base text-[var(--muted)]">
-          Search decisions, blocks, monitor events, AI commands, and paper
-          orders. No secrets.
-        </p>
-      </div>
-
-      <SafetyStrip
-        orderExecutionEnabled={data?.orderExecutionEnabled ?? false}
+      <PageHeader
+        title="Activity"
+        description="Search and filter meaningful desk events."
+        actions={
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)]"
+          >
+            Refresh
+          </button>
+        }
       />
 
-      <PaperOnlyBanner
-        detail={`AI ${data?.aiProvider ?? "—"} · News ${data?.newsProvider ?? "—"}`}
-      />
-
-      <Panel title="Filters">
+      <Panel title="Activity tools">
         <div className="flex flex-wrap gap-2">
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search logs…"
+            placeholder="Search activity…"
             className={`${selectClass} min-w-[10rem] flex-1`}
           />
           <select
@@ -252,21 +267,33 @@ export function LogsView() {
             <option value="hold">HOLD</option>
           </select>
           <select
-            value={kind}
-            onChange={(e) => setKind(e.target.value as LogKind)}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as ActivityFilter)}
             className={selectClass}
+            aria-label="Activity type"
           >
-            <option value="all">All sections</option>
-            <option value="decisions">Decisions</option>
-            <option value="blocked">Blocked reasons</option>
-            <option value="orders">Paper orders</option>
-            <option value="monitor">Monitor</option>
-            <option value="ai">AI commands</option>
+            <option value="all">All</option>
+            <option value="trades">Trades</option>
+            <option value="safety">Safety</option>
+            <option value="system">System</option>
+            <option value="errors">Errors</option>
           </select>
         </div>
       </Panel>
 
-      {(kind === "all" || kind === "decisions") && (
+      {showTrades && (
+        <Panel title="Paper order preview / submission history">
+          {trades.length > 0 ? (
+            <PaperOrdersTable trades={trades} timeColumn="submitted" />
+          ) : (
+            <EmptyState title="No paper trade approvals yet">
+              <p>Manual paper submits will show here after confirmation.</p>
+            </EmptyState>
+          )}
+        </Panel>
+      )}
+
+      {showDecisions && (
         <Panel title="Decision history">
           {decisionRows.length === 0 ? (
             <EmptyState title="No matching decisions">
@@ -329,60 +356,115 @@ export function LogsView() {
         </Panel>
       )}
 
-      {(kind === "all" || kind === "orders") && (
-        <Panel title="Paper order preview / submission history">
-          {trades.length > 0 ? (
-            <PaperOrdersTable trades={trades} timeColumn="submitted" />
-          ) : (
-            <EmptyState title="No paper trade approvals yet">
-              <p>Manual paper submits will show here after confirmation.</p>
-            </EmptyState>
-          )}
-        </Panel>
-      )}
-
-      {(kind === "all" || kind === "monitor") && (
-        <Panel title="Monitor scan logs">
-          {monitorFiltered.length === 0 ? (
-            <EmptyState title="No monitor log entries">
-              <p>Start a monitor scan to populate this section.</p>
-            </EmptyState>
-          ) : (
+      {showSafety && (
+        <ExpandableSection
+          title="Blocked trade reasons"
+          expandLabel="View blocked trades"
+          collapseLabel="Hide blocked trades"
+          summary={
+            filter === "errors"
+              ? `${blocked.length} safety / block entries (errors filter).`
+              : `${blocked.length} safety / block entries.`
+          }
+        >
+          {blocked.length > 0 ? (
             <ul className="space-y-3 text-sm">
-              {monitorFiltered.slice(0, 50).map((log) => (
-                <li
-                  key={log.id}
-                  className="border-b border-[var(--border)]/40 pb-3"
-                >
-                  <div className="flex flex-wrap items-baseline gap-2">
-                    <span className="font-semibold capitalize">{log.event}</span>
-                    <span
-                      className={`text-[10px] uppercase ${
-                        log.level === "error"
-                          ? "text-rose-200"
-                          : log.level === "warn"
-                            ? "text-amber-200"
-                            : "text-[var(--muted)]"
-                      }`}
-                    >
-                      {log.level}
-                    </span>
-                    <span className="text-xs text-[var(--muted)]">
-                      {formatTime(log.timestamp)}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-[var(--foreground)]/85">
-                    {log.message}
-                  </p>
-                </li>
-              ))}
+              {blocked.slice(0, 30).map((b, i) => {
+                const reasons = [...b.riskWarnings, ...b.reasons].filter((r) =>
+                  /block|closed|stale|spread|risk|hold|execution/i.test(r),
+                );
+                return (
+                  <li
+                    key={`${b.id}-${i}`}
+                    className="border-b border-[var(--border)]/40 pb-3"
+                  >
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="font-semibold">{b.symbol}</span>
+                      <span className="text-[var(--muted)] text-xs">
+                        {formatTime(b.timestamp)}
+                      </span>
+                    </div>
+                    <div className="mt-2">
+                      <BlockReasonList
+                        reasons={
+                          reasons.length > 0
+                            ? reasons
+                            : ["HOLD — not tradeable"]
+                        }
+                        layout="inline"
+                      />
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
+          ) : (
+            <EmptyState title="No blocked-trade log entries">
+              <p>No matching blocked reasons for the current filters.</p>
+            </EmptyState>
           )}
-        </Panel>
+        </ExpandableSection>
       )}
 
-      {(kind === "all" || kind === "ai") && (
-        <Panel title="AI command history (local)">
+      <ExpandableSection
+        title="Technical Logs"
+        expandLabel="View technical logs"
+        collapseLabel="Hide technical logs"
+        tip={
+          <InfoTip text="Raw monitor scan events for troubleshooting. Collapsed by default." />
+        }
+        summary={
+          filter === "errors"
+            ? `${techLogs.length} warn/error monitor events.`
+            : "Developer-oriented monitor scan events."
+        }
+      >
+        {techLogs.length === 0 ? (
+          <EmptyState title="No monitor log entries">
+            <p>
+              {filter === "errors"
+                ? "No warn/error monitor events for the current filters."
+                : "Start a monitor scan to populate this section."}
+            </p>
+          </EmptyState>
+        ) : (
+          <ul className="space-y-3 text-sm">
+            {techLogs.slice(0, 50).map((log) => (
+              <li
+                key={log.id}
+                className="border-b border-[var(--border)]/40 pb-3"
+              >
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="font-semibold capitalize">{log.event}</span>
+                  <span
+                    className={`text-[10px] uppercase ${
+                      log.level === "error"
+                        ? "text-rose-200"
+                        : log.level === "warn"
+                          ? "text-amber-200"
+                          : "text-[var(--muted)]"
+                    }`}
+                  >
+                    {log.level}
+                  </span>
+                  <span className="text-xs text-[var(--muted)]">
+                    {formatTime(log.timestamp)}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-[var(--foreground)]/85">
+                  {log.message}
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </ExpandableSection>
+
+      {showAiHistory && (
+        <AdvancedDetails
+          title="AI command history"
+          summary="Local browser AI assistant commands. Collapsed by default."
+        >
           {aiFiltered.length === 0 ? (
             <EmptyState title="No AI commands logged">
               <p>
@@ -420,48 +502,7 @@ export function LogsView() {
               ))}
             </ul>
           )}
-        </Panel>
-      )}
-
-      {(kind === "all" || kind === "blocked") && (
-        <Panel title="Blocked trade reasons">
-          {blocked.length > 0 ? (
-            <ul className="space-y-3 text-sm">
-              {blocked.slice(0, 30).map((b, i) => {
-                const reasons = [...b.riskWarnings, ...b.reasons].filter((r) =>
-                  /block|closed|stale|spread|risk|hold|execution/i.test(r),
-                );
-                return (
-                  <li
-                    key={`${b.id}-${i}`}
-                    className="border-b border-[var(--border)]/40 pb-3"
-                  >
-                    <div className="flex flex-wrap items-baseline gap-2">
-                      <span className="font-semibold">{b.symbol}</span>
-                      <span className="text-[var(--muted)] text-xs">
-                        {formatTime(b.timestamp)}
-                      </span>
-                    </div>
-                    <div className="mt-2">
-                      <BlockReasonList
-                        reasons={
-                          reasons.length > 0
-                            ? reasons
-                            : ["HOLD — not tradeable"]
-                        }
-                        layout="inline"
-                      />
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <EmptyState title="No blocked-trade log entries">
-              <p>No matching blocked reasons for the current filters.</p>
-            </EmptyState>
-          )}
-        </Panel>
+        </AdvancedDetails>
       )}
     </div>
   );

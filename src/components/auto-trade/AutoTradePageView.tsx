@@ -3,15 +3,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMonitorStream } from "@/components/layout/MonitorStreamContext";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { SafetyBanner } from "@/components/layout/SafetyBanner";
-import { UnprotectedPositionsBanner } from "@/components/ui/UnprotectedPositionsBanner";
 import { fetchJson } from "@/lib/client/fetch-json";
 import type { TradeRow } from "@/lib/dashboard-types";
 import type { AutoTradeStatus } from "@/lib/auto-trade/types";
 import { buildOperatorBlockers } from "@/lib/auto-trade/operator-blockers";
+import { resolvePrimaryStatus } from "@/lib/auto-trade/primary-status";
 import { TradingSettingsDrawer } from "@/components/auto-trade/TradingSettingsDrawer";
-import { AutoTradeControlsPanel } from "@/components/auto-trade/AutoTradeControlsPanel";
+import {
+  AutoTradeControlsPanel,
+  AutoTradeEmergencyControls,
+} from "@/components/auto-trade/AutoTradeControlsPanel";
 import { AutoTradeStatusHeader } from "@/components/auto-trade/AutoTradeStatusHeader";
+import { AutoTradeOverviewCard } from "@/components/auto-trade/AutoTradeOverviewCard";
+import { AutoTradeInfoTip } from "@/components/auto-trade/AutoTradeInfoTip";
+import { ExpandableSection } from "@/components/ui/ExpandableSection";
 import { V1DailyProgressPanel } from "@/components/auto-trade/V1DailyProgressPanel";
 import { V1ManagedTradeCard } from "@/components/auto-trade/V1ManagedTradeCard";
 import { ExternalPositionsWarning } from "@/components/auto-trade/ExternalPositionsWarning";
@@ -32,6 +37,10 @@ type AutoTradeApi = AutoTradeStatus & {
 };
 
 const STALE_MS = 120_000;
+
+function fmtPct(n: number): string {
+  return `${(n * 100).toFixed(2)}%`;
+}
 
 export function AutoTradePageView() {
   const stream = useMonitorStream();
@@ -180,69 +189,78 @@ export function AutoTradePageView() {
     [status?.recentDecisions, status?.recentLogs],
   );
 
+  const managedSet = useMemo(
+    () => new Set(managedSymbols.map((s) => s.toUpperCase())),
+    [managedSymbols],
+  );
+
+  const openPosition = useMemo(() => {
+    const positions = t?.openPositions ?? [];
+    const managed =
+      positions.find((p) => managedSet.has(p.symbol.toUpperCase())) ??
+      positions[0];
+    if (!managed) return null;
+    return {
+      symbol: managed.symbol,
+      qty: managed.qty,
+      unrealizedPl: managed.unrealizedPl,
+    };
+  }, [t?.openPositions, managedSet]);
+
+  const dailyTradesUsed = status?.dailyTradesUsed ?? 0;
+  const maxDailyTrades =
+    status?.maxDailyTrades ?? status?.runtimeSettings?.maxTradesPerDay ?? 0;
+
+  const primary = useMemo(
+    () =>
+      resolvePrimaryStatus({
+        blockerSummary,
+        autoTradingOn: autoOn,
+        executionOn,
+        marketOpen: t?.marketOpen,
+        hasOpenPosition: Boolean(openPosition),
+        hasQualifiedBuy: hasBuy,
+        dailyTradesUsed,
+        maxDailyTrades,
+        panicStop: Boolean(status?.panicStop ?? engine?.panicStopActive),
+        killSwitch: Boolean(status?.killSwitch ?? engine?.killSwitchActive),
+      }),
+    [
+      blockerSummary,
+      autoOn,
+      executionOn,
+      t?.marketOpen,
+      openPosition,
+      hasBuy,
+      dailyTradesUsed,
+      maxDailyTrades,
+      status?.panicStop,
+      status?.killSwitch,
+      engine?.panicStopActive,
+      engine?.killSwitchActive,
+    ],
+  );
+
+  const riskLimits = status?.runtimeSettings
+    ? {
+        maxRiskPerTradePct: status.runtimeSettings.maxRiskPerTradePct,
+        maxTradesPerDay: status.runtimeSettings.maxTradesPerDay,
+        maxOpenPositions: status.runtimeSettings.maxOpenPositions,
+        maxDailyLossPct: status.runtimeSettings.maxDailyLossPct,
+        maxPositionAllocationPct: status.runtimeSettings.maxPositionAllocationPct,
+      }
+    : null;
+
+  const openPositions = t?.openPositions ?? [];
+  const orphaned = t?.orphanedPositions ?? [];
+  const dailyLimitReached =
+    maxDailyTrades > 0 && dailyTradesUsed >= maxDailyTrades;
+
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-3 pb-10 sm:px-4 lg:gap-5">
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 pb-8 lg:gap-5">
       <PageHeader
-        title="Auto Trade"
-        description="Version 1 paper operator desk — long-only, paper only, live trading blocked."
-      />
-      <SafetyBanner
-        orderExecutionEnabled={executionOn}
-        autoTradingEnabled={autoOn}
-        engineState={engine?.engineState}
-      />
-      <UnprotectedPositionsBanner
-        positions={(t?.orphanedPositions ?? []).map((o) => ({
-          symbol: o.symbol,
-          reason: o.reason,
-        }))}
-      />
-
-      {error ? (
-        <div
-          className="rounded-[var(--radius)] border border-red-500/40 bg-red-950/30 px-4 py-3 text-sm text-red-100"
-          role="alert"
-        >
-          <p className="font-medium">Unable to refresh Auto Trade status</p>
-          <p className="mt-1 text-red-100/80">{error}</p>
-          <button
-            type="button"
-            className="ui-btn mt-2 border border-red-400/40 text-sm"
-            onClick={() => void refresh()}
-          >
-            Retry
-          </button>
-        </div>
-      ) : null}
-
-      <AutoTradeStatusHeader
-        loading={!status}
-        autoTradingOn={autoOn}
-        executionOn={executionOn}
-        marketOpen={t?.marketOpen}
-        alpacaConnected={t?.alpacaConnected ?? false}
-        dataFreshness={t?.universe?.dataFreshness}
-        lastUpdatedAt={lastUpdatedAt}
-        staleUpdate={staleUpdate}
-      />
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <V1DailyProgressPanel
-          executionOff={!executionOn}
-          autoOff={!autoOn}
-        />
-        <TradingBlockersPanel summary={blockerSummary} loading={!status} />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <V1ManagedTradeCard onNeedsIntervention={setNeedsIntervention} />
-        <LatestStrategyDecisionCard onHasBuyChange={setHasBuy} />
-      </div>
-
-      <ExternalPositionsWarning
-        positions={t?.openPositions ?? []}
-        managedSymbols={managedSymbols}
-        orphanedSymbols={(t?.orphanedPositions ?? []).map((o) => o.symbol)}
+        title="Auto Trading"
+        description="Start, stop, or run the automated paper-trading system."
       />
 
       <AutoTradeControlsPanel
@@ -250,32 +268,149 @@ export function AutoTradePageView() {
         busy={busy}
         feedback={feedback}
         marketOpen={t?.marketOpen}
-        positions={t?.openPositions ?? []}
-        riskLimits={
-          status?.runtimeSettings
-            ? {
-                maxRiskPerTradePct: status.runtimeSettings.maxRiskPerTradePct,
-                maxTradesPerDay: status.runtimeSettings.maxTradesPerDay,
-                maxOpenPositions: status.runtimeSettings.maxOpenPositions,
-                maxDailyLossPct: status.runtimeSettings.maxDailyLossPct,
-                maxPositionAllocationPct:
-                  status.runtimeSettings.maxPositionAllocationPct,
-              }
-            : null
-        }
+        positions={openPositions}
+        riskLimits={riskLimits}
         eligibleCount={t?.universe?.eligibleCount}
         reconciliationComplete={t?.reconciliationComplete}
         hasCriticalLifecycleWarning={needsIntervention}
         onAction={postAction}
         onOpenSettings={() => setSettingsOpen(true)}
+        systemError={error}
+        onRetry={() => void refresh()}
+        brokerConnected={t?.alpacaConnected ?? null}
+        dailyLimitReached={dailyLimitReached}
+        compactStatus={
+          <AutoTradeOverviewCard
+            loading={!status}
+            primary={primary}
+            marketOpen={t?.marketOpen}
+            autoTradingOn={autoOn}
+            executionOn={executionOn}
+            equity={t?.equity}
+            dailyPnL={t?.dailyPnL}
+            openPosition={openPosition}
+            dailyTradesUsed={dailyTradesUsed}
+            maxDailyTrades={maxDailyTrades}
+            staleUpdate={staleUpdate}
+          />
+        }
+        moreActions={
+          <AutoTradeEmergencyControls
+            engine={engine}
+            busy={busy}
+            marketOpen={t?.marketOpen}
+            positions={openPositions}
+            onAction={postAction}
+          />
+        }
       />
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <V1UniversePanel universe={t?.universe ?? null} />
-        <RecentAutoTradeActivity items={activity} loading={!status} />
-      </div>
+      <AdvancedAutoTradeDetails
+        status={status}
+        orders={orders}
+        engineNotes={engine?.blockingReasons ?? []}
+        legacySection={
+          <ExternalPositionsWarning
+            positions={openPositions}
+            managedSymbols={managedSymbols}
+            orphanedSymbols={orphaned.map((o) => o.symbol)}
+          />
+        }
+      >
+        <ExpandableSection
+          title="Position Details"
+          defaultOpen={false}
+          expandLabel="View position details"
+          collapseLabel="Hide position details"
+          tip={
+            <AutoTradeInfoTip text="Entry, exits, and protection for the current Version 1 managed trade." />
+          }
+          summary={
+            openPosition
+              ? `${openPosition.symbol} is open — details live on Positions; expand for managed-trade diagnostics.`
+              : "No open managed position right now."
+          }
+        >
+          <V1ManagedTradeCard onNeedsIntervention={setNeedsIntervention} />
+        </ExpandableSection>
 
-      <AdvancedAutoTradeDetails status={status} orders={orders} />
+        <ExpandableSection
+          title="Today's Activity"
+          expandLabel="View activity"
+          collapseLabel="Hide activity"
+          tip={
+            <AutoTradeInfoTip text="Daily goal progress and recent paper trading events." />
+          }
+          summary="Daily goal, wins and losses, and recent activity."
+        >
+          <div className="space-y-6">
+            <V1DailyProgressPanel
+              executionOff={!executionOn}
+              autoOff={!autoOn}
+            />
+            <RecentAutoTradeActivity items={activity} loading={!status} />
+          </div>
+        </ExpandableSection>
+
+        <ExpandableSection
+          title="Risk Protection"
+          expandLabel="View risk details"
+          collapseLabel="Hide risk details"
+          tip={
+            <AutoTradeInfoTip text="Why trading may be blocked, plus the risk limits that protect the paper account." />
+          }
+          summary="Blockers, risk limits, and safety context."
+        >
+          <div className="space-y-6">
+            <TradingBlockersPanel summary={blockerSummary} loading={!status} />
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+                Risk limits
+                <AutoTradeInfoTip text="These limits apply before any paper order can submit." />
+              </h3>
+              {riskLimits ? (
+                <ul className="grid gap-2 text-sm text-zinc-300 sm:grid-cols-2">
+                  <li>Risk per trade: {fmtPct(riskLimits.maxRiskPerTradePct)}</li>
+                  <li>Max trades per day: {riskLimits.maxTradesPerDay}</li>
+                  <li>Max open positions: {riskLimits.maxOpenPositions}</li>
+                  <li>Daily loss limit: {fmtPct(riskLimits.maxDailyLossPct)}</li>
+                  <li>
+                    Max position size:{" "}
+                    {fmtPct(riskLimits.maxPositionAllocationPct)}
+                  </li>
+                </ul>
+              ) : (
+                <p className="text-sm text-[var(--muted)]">Risk limits loading…</p>
+              )}
+            </div>
+          </div>
+        </ExpandableSection>
+
+        <ExpandableSection
+          title="How the strategy works"
+          expandLabel="View strategy details"
+          collapseLabel="Hide strategy details"
+          tip={
+            <AutoTradeInfoTip text="Plain-English strategy context, latest decision, and watchlist eligibility." />
+          }
+          summary="Strategy explanation, latest decision, and watchlist status."
+        >
+          <div className="space-y-6">
+            <AutoTradeStatusHeader
+              loading={!status}
+              autoTradingOn={autoOn}
+              executionOn={executionOn}
+              marketOpen={t?.marketOpen}
+              alpacaConnected={t?.alpacaConnected ?? false}
+              dataFreshness={t?.universe?.dataFreshness}
+              lastUpdatedAt={lastUpdatedAt}
+              staleUpdate={staleUpdate}
+            />
+            <LatestStrategyDecisionCard onHasBuyChange={setHasBuy} />
+            <V1UniversePanel universe={t?.universe ?? null} />
+          </div>
+        </ExpandableSection>
+      </AdvancedAutoTradeDetails>
 
       <TradingSettingsDrawer
         open={settingsOpen}

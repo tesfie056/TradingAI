@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { Panel } from "@/components/ui/Panel";
 import { formatTime } from "@/lib/format";
 import type { AutoTradeDecision, AutoTradeLogEntry } from "@/lib/auto-trade/types";
 import { formatSkipReason } from "@/lib/auto-trade/display";
@@ -19,6 +18,13 @@ function severityClass(s: ActivityItem["severity"]): string {
   if (s === "warn") return "text-amber-200";
   if (s === "critical") return "text-red-300";
   return "text-zinc-300";
+}
+
+function severityLabel(s: ActivityItem["severity"]): string {
+  if (s === "ok") return "Success";
+  if (s === "warn") return "Notice";
+  if (s === "critical") return "Important";
+  return "Info";
 }
 
 export function buildRecentActivity(input: {
@@ -79,17 +85,17 @@ export function RecentAutoTradeActivity({
   loading?: boolean;
 }) {
   return (
-    <Panel
-      title="Recent activity"
-      action={
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-zinc-100">Recent activity</h3>
         <Link
           href="/logs"
           className="text-xs text-[var(--muted)] underline underline-offset-2 hover:text-zinc-200"
         >
           Full Logs page
         </Link>
-      }
-    >
+      </div>
+
       {loading && items.length === 0 ? (
         <p className="text-sm text-[var(--muted)]">Loading activity…</p>
       ) : items.length === 0 ? (
@@ -108,13 +114,13 @@ export function RecentAutoTradeActivity({
                 </p>
                 <p className="text-xs text-[var(--muted)]">{formatTime(item.time)}</p>
               </div>
-              <span className="text-xs capitalize text-[var(--muted)]">
-                {item.severity}
+              <span className="text-xs text-[var(--muted)]">
+                {severityLabel(item.severity)}
               </span>
             </li>
           ))}
         </ul>
       )}
-    </Panel>
+    </div>
   );
 }

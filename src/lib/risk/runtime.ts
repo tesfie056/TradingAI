@@ -6,9 +6,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { marketDayKey } from "@/lib/market/time";
+import { getTradingDataDir } from "@/lib/paths/data-root";
 
-const DIR = path.join(process.cwd(), "data");
-const FILE = path.join(DIR, "risk-runtime.json");
+function riskRuntimeFile(): string {
+  return path.join(getTradingDataDir(), "risk-runtime.json");
+}
 
 export type RiskRuntimeState = {
   paperOnly: true;
@@ -39,13 +41,13 @@ function defaultState(dayKey = marketDayKey()): RiskRuntimeState {
 }
 
 async function ensureDir() {
-  await mkdir(DIR, { recursive: true });
+  await mkdir(getTradingDataDir(), { recursive: true });
 }
 
 export async function readRiskRuntime(): Promise<RiskRuntimeState> {
   const today = marketDayKey();
   try {
-    const raw = await readFile(FILE, "utf8");
+    const raw = await readFile(riskRuntimeFile(), "utf8");
     const parsed = JSON.parse(raw) as RiskRuntimeState;
     if (parsed?.paperOnly !== true) return defaultState(today);
     if (parsed.dayKey !== today) {
@@ -66,7 +68,11 @@ export async function writeRiskRuntime(
 ): Promise<RiskRuntimeState> {
   await ensureDir();
   const next = { ...state, paperOnly: true as const };
-  await writeFile(FILE, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  await writeFile(
+    riskRuntimeFile(),
+    `${JSON.stringify(next, null, 2)}\n`,
+    "utf8",
+  );
   return next;
 }
 

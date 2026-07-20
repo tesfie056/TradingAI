@@ -1,18 +1,16 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { PageHeader, PageLinkButton } from "@/components/layout/PageHeader";
-import { SafetyBanner } from "@/components/layout/SafetyBanner";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { useUiChrome } from "@/components/layout/UiChromeContext";
 import { Panel } from "@/components/ui/Panel";
-import { ActionBadge, ConfidenceBar } from "@/components/ui/badges";
-import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
-import { SafetyStrip, StatusDot } from "@/components/ui/SafetyStrip";
+import { ExpandableSection } from "@/components/ui/ExpandableSection";
+import { InfoTip } from "@/components/ui/InfoTip";
+import { StockSearch } from "@/components/stock/StockSearch";
 import { fetchJson } from "@/lib/client/fetch-json";
-import { aiStatusDisplayLabel } from "@/lib/client/block-reasons";
 import { formatMoney, formatTime } from "@/lib/format";
-import { topSignalHeadline } from "@/lib/monitor/display";
+import { getLocalWatchlistSymbols } from "@/lib/client/ui-settings";
 import type { MonitorStatus } from "@/lib/monitor/types";
 import type { AiDecision, MarketClockStatus } from "@/lib/alpaca/types";
 import type {
@@ -21,64 +19,100 @@ import type {
 } from "@/lib/dashboard-types";
 import type { MarketCondition } from "@/lib/stocks/market-condition";
 
-const QUICK_LINKS = [
-  {
-    href: "/monitor",
-    title: "Monitor",
-    text: "Scan for paper-trade setups without placing orders.",
-  },
-  {
-    href: "/watchlist",
-    title: "Watchlist",
-    text: "Review AI decisions and prepare a paper trade.",
-  },
-  {
-    href: "/trade",
-    title: "Trade",
-    text: "Preview and manually approve paper orders.",
-  },
-  {
-    href: "/performance",
-    title: "Performance",
-    text: "See how past decisions would have fared.",
-  },
-  {
-    href: "/backtest",
-    title: "Backtest",
-    text: "Replay strategy rules on historical bars.",
-  },
-  {
-    href: "/assistant",
-    title: "Assistant",
-    text: "Ask the desk AI — it never places orders.",
-  },
-  {
-    href: "/settings",
-    title: "Settings",
-    text: "Defaults, watchlist prefs, and view mode.",
-  },
-  {
-    href: "/logs",
-    title: "Logs",
-    text: "Decisions, blocks, monitor events, and AI history.",
-  },
-] as const;
+type AutoTradeSnap = {
+  dailyTradesUsed?: number;
+  maxDailyTrades?: number;
+  effectivelyEnabled?: boolean;
+  envEnabled?: boolean;
+  executionEnabled?: boolean;
+  engine?: {
+    autoTradingEnabled?: boolean;
+    executionEnabled?: boolean;
+  };
+  trader?: {
+    equity?: number | null;
+    dailyPnL?: number;
+    openPositions?: { symbol: string; qty: number; unrealizedPl: number | null }[];
+    marketOpen?: boolean | null;
+  };
+  recentDecisions?: {
+    id: string;
+    symbol: string;
+    reason: string;
+    status: string;
+    createdAt: string;
+  }[];
+};
+
+function resolveOverviewStatus(input: {
+  marketOpen: boolean | null;
+  autoOn: boolean;
+  executionOn: boolean;
+  openCount: number;
+  dailyPnL: number | null;
+}): { message: string; detail: string; tone: "ok" | "warn" | "neutral" | "bad" } {
+  if (input.marketOpen === false) {
+    return {
+      message: "Market is closed",
+      detail: "You can review the watchlist and prepare for the next session.",
+      tone: "neutral",
+    };
+  }
+  if (!input.autoOn) {
+    return {
+      message: "Auto trading is off",
+      detail: "Turn automation on from Auto Trading when you want paper orders submitted automatically.",
+      tone: "warn",
+    };
+  }
+  if (!input.executionOn) {
+    return {
+      message: "Trade execution is off",
+      detail: "Automation is on, but paper order submission stays locked until execution is enabled.",
+      tone: "warn",
+    };
+  }
+  if (input.openCount > 0) {
+    return {
+      message: "A paper position is open",
+      detail: "Review Positions for entry, protection, and current profit or loss.",
+      tone: "ok",
+    };
+  }
+  return {
+    message: "Auto trading is ready",
+    detail: "The system is waiting for a valid setup.",
+    tone: "ok",
+  };
+}
+
+function toneClasses(tone: "ok" | "warn" | "neutral" | "bad"): string {
+  if (tone === "ok") return "border-emerald-500/35 bg-emerald-500/10 text-emerald-50";
+  if (tone === "warn") return "border-amber-500/35 bg-amber-500/10 text-amber-50";
+  if (tone === "bad") return "border-red-500/40 bg-red-950/35 text-red-50";
+  return "border-[var(--border)] bg-[var(--panel-elevated)]/80 text-zinc-100";
+}
+
+function pnlClass(n: number | null | undefined): string {
+  if (n == null || n === 0) return "text-zinc-100";
+  return n > 0 ? "text-emerald-300" : "text-red-300";
+}
 
 export function DashboardOverview({
   account,
   currency,
   clock,
-  marketCondition,
+  marketCondition: _marketCondition,
   orderExecutionEnabled,
   decisions,
-  aiHealth,
-  simple,
+  aiHealth: _aiHealth,
+  simple: _simple,
   loadedAt,
   error,
   refresh,
   isPending,
-  refreshAiHealth,
-  aiHealthBusy,
+  refreshAiHealth: _refreshAiHealth,
+  aiHealthBusy: _aiHealthBusy,
 }: {
   account: AccountPayload | null;
   currency: string;
@@ -96,78 +130,81 @@ export function DashboardOverview({
   aiHealthBusy: boolean;
 }) {
   const marketOpen = clock?.isOpen ?? null;
-  const best = [...decisions].sort(
-    (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0),
-  )[0];
-  const tradable = decisions.filter((d) => d.readyForManualPaperTrade).length;
-
+  const { openAi: _openAi } = useUiChrome();
   const [monitor, setMonitor] = useState<MonitorStatus | null>(null);
-  const [monitorError, setMonitorError] = useState<string | null>(null);
+  const [auto, setAuto] = useState<AutoTradeSnap | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      try {
-        const next = await fetchJson<MonitorStatus>("/api/monitor");
-        if (!cancelled) {
-          setMonitor(next);
-          setMonitorError(null);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setMonitorError(
-            err instanceof Error ? err.message : "Monitor unavailable",
-          );
-        }
-      }
+      const [mon, at] = await Promise.all([
+        fetchJson<MonitorStatus>("/api/monitor").catch(() => null),
+        fetchJson<AutoTradeSnap>("/api/auto-trade").catch(() => null),
+      ]);
+      if (cancelled) return;
+      setMonitor(mon);
+      setAuto(at);
     })();
     return () => {
       cancelled = true;
     };
   }, [loadedAt]);
 
-  const aiLabel = aiStatusDisplayLabel(aiHealth?.statusLabel);
-  const { openAi } = useUiChrome();
+  const autoOn =
+    auto?.engine?.autoTradingEnabled ??
+    auto?.effectivelyEnabled ??
+    auto?.envEnabled ??
+    false;
+  const executionOn =
+    auto?.engine?.executionEnabled ??
+    auto?.executionEnabled ??
+    orderExecutionEnabled;
+  const positions = auto?.trader?.openPositions ?? [];
+  const openCount = positions.length;
+  const dailyPnL = auto?.trader?.dailyPnL ?? null;
+  const equity = account?.account.equity ?? auto?.trader?.equity ?? null;
+  const primary = positions[0] ?? null;
+  const best = [...decisions].sort(
+    (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0),
+  )[0];
+
+  const status = resolveOverviewStatus({
+    marketOpen: auto?.trader?.marketOpen ?? marketOpen,
+    autoOn,
+    executionOn,
+    openCount,
+    dailyPnL,
+  });
+
+  const activity = (auto?.recentDecisions ?? []).slice(0, 5);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <PageHeader
-        title="Dashboard"
-        description="A calm paper-trading desk for U.S. stocks. AI can explain and suggest — you always confirm."
+        title="Overview"
+        description="Find a stock, check your desk, and review today’s paper activity."
         actions={
-          <>
-            <button
-              type="button"
-              onClick={() => openAi()}
-              className="ui-btn border border-amber-500/45 bg-amber-500/15 text-amber-50"
-            >
-              Ask AI
-            </button>
-            <PageLinkButton href="/watchlist">Watchlist</PageLinkButton>
-            <PageLinkButton href="/monitor">Monitor</PageLinkButton>
-            <PageLinkButton href="/trade">Trade</PageLinkButton>
-          </>
-        }
-      />
-
-      <SafetyBanner orderExecutionEnabled={orderExecutionEnabled} />
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <PaperOnlyBanner detail="manual approval required · stocks only" />
-        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={refresh}
             disabled={isPending}
-            className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
+            className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] disabled:opacity-50"
           >
             {isPending ? "Refreshing…" : "Refresh"}
           </button>
-          <p className="text-sm text-[var(--muted)]">
-            Updated {formatTime(loadedAt)}
-          </p>
-        </div>
-      </div>
+        }
+      />
+
+      <StockSearch
+        ownedSymbols={positions.map((p) => p.symbol)}
+        knownSymbols={[
+          ...new Set([
+            ...getLocalWatchlistSymbols(),
+            ...decisions.map((d) => d.symbol),
+            ...positions.map((p) => p.symbol),
+          ]),
+        ]}
+      />
 
       {error ? (
         <div className="rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-base text-rose-100">
@@ -175,215 +212,236 @@ export function DashboardOverview({
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <SummaryCard
-          label="Account equity"
-          value={formatMoney(account?.account.equity, currency)}
+      <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <Metric
+          label="Account value"
+          tip="Paper account equity"
+          value={formatMoney(equity, currency)}
         />
-        <SummaryCard
-          label="Cash"
-          value={formatMoney(account?.account.cash, currency)}
-        />
-        <SummaryCard
-          label="Buying power"
-          value={formatMoney(account?.account.buyingPower, currency)}
-        />
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <StatusCard
-          label="Market"
+        <Metric
+          label="Today’s profit or loss"
+          tip="Combined paper P/L for today"
           value={
-            marketOpen == null ? "—" : marketOpen ? "Open" : "Closed"
+            dailyPnL == null
+              ? "—"
+              : `${dailyPnL < 0 ? "-" : ""}$${Math.abs(dailyPnL).toFixed(2)}`
           }
-          hint={
-            marketCondition
-              ? `${marketCondition.label} · score ${(marketCondition.marketScore * 100).toFixed(0)}%`
-              : undefined
-          }
-          tone={marketOpen === false ? "warn" : marketOpen ? "ok" : "neutral"}
+          valueClass={pnlClass(dailyPnL)}
         />
-        <StatusCard
-          label="AI status"
-          value={aiLabel}
-          hint={
-            aiHealth?.ollama.message
-              ? `${aiHealth.ollama.message}${
-                  aiHealth.ollama.latencyMs != null
-                    ? ` · ${aiHealth.ollama.latencyMs}ms`
-                    : ""
-                }`
-              : undefined
+        <Metric
+          label="Open positions"
+          tip="How many paper positions are open"
+          value={String(openCount)}
+        />
+        <Metric
+          label="Auto trading"
+          tip="Whether automation may submit paper orders"
+          value={autoOn ? "On" : "Off"}
+          valueClass={autoOn ? "text-emerald-300" : "text-zinc-100"}
+        />
+        <Metric
+          label="Market"
+          tip="Regular US market session"
+          value={
+            (auto?.trader?.marketOpen ?? marketOpen) == null
+              ? "—"
+              : (auto?.trader?.marketOpen ?? marketOpen)
+                ? "Open"
+                : "Closed"
           }
-          tone={aiHealth?.statusLabel === "connected" ? "ok" : "warn"}
-          action={
-            <button
-              type="button"
-              onClick={refreshAiHealth}
-              disabled={aiHealthBusy}
-              className="text-sm text-amber-100 underline-offset-2 hover:underline disabled:opacity-50"
+        />
+      </dl>
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] xl:items-start">
+        <div className="flex min-w-0 flex-col gap-5">
+          <Panel title="Status" className="shadow-sm shadow-black/20">
+            <div
+              className={`rounded-[var(--radius-sm)] border px-4 py-3 ${toneClasses(status.tone)}`}
+              role="status"
             >
-              {aiHealthBusy ? "Checking…" : "Check AI"}
-            </button>
-          }
-        />
-        <StatusCard
-          label="Order execution"
-          value={orderExecutionEnabled ? "ON" : "OFF"}
-          hint="Paper submits stay locked when OFF"
-          tone={orderExecutionEnabled ? "warn" : "neutral"}
-        />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Panel title="Top signal">
-          {best ? (
-            <div className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xl font-semibold tracking-tight">
-                  {best.symbol}
-                </span>
-                <ActionBadge action={best.action} />
-              </div>
-              <ConfidenceBar value={best.confidence} />
-              <p className="text-base leading-relaxed text-[var(--foreground)]/90">
-                {simple
-                  ? (best.explanation?.summary ??
-                    best.reasons[0] ??
-                    "No summary yet.")
-                  : (best.explanation?.summary ??
-                    best.reasons.slice(0, 2).join(" "))}
+              <p className="text-lg font-semibold tracking-tight">
+                {status.message}
               </p>
-              <p className="text-sm text-[var(--muted)]">
-                {tradable} ready to preview · {decisions.length} on watchlist
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Link
-                  href="/monitor"
-                  className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-sm"
-                >
-                  Open Monitor
-                </Link>
-                <Link
-                  href={`/trade?symbol=${encodeURIComponent(best.symbol)}`}
-                  className="ui-btn border border-amber-500/40 bg-amber-500/12 text-sm text-amber-50"
-                >
-                  Open Trade
-                </Link>
-              </div>
+              <p className="mt-1 text-sm opacity-90">{status.detail}</p>
             </div>
-          ) : (
-            <p className="text-base text-[var(--muted)]">
-              Refresh the desk to load decisions.
+            <p className="mt-3 text-xs text-[var(--muted)]">
+              Updated {formatTime(loadedAt)}
+              {monitor?.running ? " · Monitor running" : ""}
             </p>
-          )}
-        </Panel>
+          </Panel>
 
-        <Panel title="Monitor status">
-          {monitorError ? (
-            <p className="text-base text-amber-100/90">{monitorError}</p>
-          ) : monitor ? (
-            <div className="flex flex-col gap-3 text-base">
-              <div className="flex flex-wrap items-center gap-2">
-                <StatusDot
-                  tone={
-                    monitor.status === "running"
-                      ? "ok"
-                      : monitor.status === "scanning"
-                        ? "warn"
-                        : "neutral"
-                  }
-                />
-                <span className="font-semibold capitalize">{monitor.status}</span>
-                <span className="text-sm text-[var(--muted)]">
-                  Last scan {formatTime(monitor.lastScanAt)}
-                </span>
+          <Panel title="Current position">
+            {primary ? (
+              <div className="flex flex-wrap items-baseline justify-between gap-3">
+                <div>
+                  <p className="text-2xl font-semibold tracking-tight">
+                    {primary.symbol}
+                  </p>
+                  <p className="mt-1 text-sm text-[var(--muted)]">
+                    Qty {primary.qty}
+                  </p>
+                </div>
+                <p
+                  className={`text-lg font-semibold ${pnlClass(primary.unrealizedPl)}`}
+                >
+                  {primary.unrealizedPl == null
+                    ? "—"
+                    : `${primary.unrealizedPl < 0 ? "-" : ""}$${Math.abs(primary.unrealizedPl).toFixed(2)}`}
+                </p>
+                <Link
+                  href="/trade"
+                  className="ui-btn border border-[var(--border)] text-sm"
+                >
+                  Inspect position
+                </Link>
               </div>
-              <p className="leading-relaxed text-[var(--foreground)]/90">
-                {monitor.topOpportunity
-                  ? topSignalHeadline(monitor.topOpportunity)
-                  : "No active top signal yet."}
-              </p>
+            ) : (
               <p className="text-sm text-[var(--muted)]">
-                {monitor.activeOpportunities} active ·{" "}
-                {monitor.opportunitiesFound} found last cycle
+                No open paper position right now.
               </p>
+            )}
+          </Panel>
+
+          <ExpandableSection
+            title="Today’s activity"
+            tip={
+              <InfoTip text="Recent paper trading decisions and important events." />
+            }
+            summary={
+              activity.length > 0
+                ? `${activity.length} recent decision${activity.length === 1 ? "" : "s"}`
+                : "No recent activity yet."
+            }
+          >
+            {activity.length === 0 ? (
+              <p className="text-sm text-[var(--muted)]">No recent decisions yet.</p>
+            ) : (
+              <ul className="space-y-2">
+                {activity.map((d) => (
+                  <li
+                    key={d.id}
+                    className="border-b border-[var(--border)]/70 pb-2 text-sm last:border-0"
+                  >
+                    <p className="font-medium text-zinc-100">
+                      {d.symbol} · {d.status}
+                    </p>
+                    <p className="text-xs text-[var(--muted)]">
+                      {d.reason.slice(0, 120)}
+                    </p>
+                    <p className="text-xs text-[var(--muted)]">
+                      {formatTime(d.createdAt)}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </ExpandableSection>
+        </div>
+
+        <aside className="flex min-w-0 flex-col gap-5">
+          <Panel title="Quick actions">
+            <div className="flex flex-col gap-2">
+              <Link
+                href="/auto-trade"
+                className="ui-btn w-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-50"
+              >
+                {autoOn ? "Manage auto trading" : "Start auto trading"}
+              </Link>
               <Link
                 href="/monitor"
-                className="ui-btn w-fit border border-[var(--border)] bg-[var(--panel-elevated)] text-sm"
+                className="ui-btn w-full border border-[var(--border)]"
               >
-                Open Monitor
+                Run scan now
               </Link>
+              {best ? (
+                <Link
+                  href={`/trade?symbol=${encodeURIComponent(best.symbol)}`}
+                  className="ui-btn w-full border border-amber-500/40 bg-amber-500/12 text-amber-50"
+                >
+                  Review {best.symbol}
+                </Link>
+              ) : null}
+              {primary ? (
+                <Link
+                  href="/trade"
+                  className="ui-btn w-full border border-[var(--border)]"
+                >
+                  Inspect open position
+                </Link>
+              ) : null}
             </div>
-          ) : (
-            <p className="text-base text-[var(--muted)]">Loading monitor…</p>
-          )}
-        </Panel>
-      </div>
+          </Panel>
 
-      <div>
-        <h2 className="mb-3 text-lg font-semibold tracking-tight">Quick links</h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {QUICK_LINKS.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="ui-card flex flex-col gap-2 transition hover:border-amber-500/35"
-            >
-              <span className="text-lg font-semibold">{item.title}</span>
-              <p className="flex-1 text-sm leading-relaxed text-[var(--muted)]">
-                {item.text}
+          <Panel title="Current opportunity">
+            {best ? (
+              <div className="space-y-2 text-sm">
+                <p className="text-xl font-semibold tracking-tight">{best.symbol}</p>
+                <p className="text-[var(--muted)]">
+                  {(best.confidence * 100).toFixed(0)}% confidence ·{" "}
+                  {best.action}
+                </p>
+                <p className="text-zinc-200">
+                  {best.explanation?.summary ??
+                    best.reasons[0] ??
+                    "No summary yet."}
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--muted)]">
+                No strong opportunity yet. Run a scan when the market is open.
               </p>
-              <span className="text-sm font-medium text-amber-100/90">
-                Open page →
-              </span>
-            </Link>
-          ))}
-        </div>
-      </div>
+            )}
+          </Panel>
 
-      <SafetyStrip orderExecutionEnabled={orderExecutionEnabled} compact />
+          <ExpandableSection
+            title="Risk protection"
+            tip={
+              <InfoTip text="Daily trade and account protection limits from auto trading." />
+            }
+            summary={
+              auto?.maxDailyTrades != null
+                ? `${auto.dailyTradesUsed ?? 0} of ${auto.maxDailyTrades} daily trades used`
+                : "Daily limits and paper-trading protections."
+            }
+          >
+            <ul className="space-y-1 text-sm text-zinc-300">
+              <li>
+                Daily trades used: {auto?.dailyTradesUsed ?? "—"}
+                {auto?.maxDailyTrades != null ? ` of ${auto.maxDailyTrades}` : ""}
+              </li>
+              <li>Paper trading only — live orders stay blocked.</li>
+              <li>
+                Trade execution: {executionOn ? "On" : "Off"} · Auto trading:{" "}
+                {autoOn ? "On" : "Off"}
+              </li>
+            </ul>
+          </ExpandableSection>
+        </aside>
+      </div>
     </div>
   );
 }
 
-function SummaryCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="ui-card">
-      <div className="text-sm text-[var(--muted)]">{label}</div>
-      <div className="mt-2 text-2xl font-semibold tracking-tight tabular-nums">
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function StatusCard({
+function Metric({
   label,
   value,
-  hint,
-  tone = "neutral",
-  action,
+  tip,
+  valueClass = "text-zinc-100",
 }: {
   label: string;
   value: string;
-  hint?: string;
-  tone?: "ok" | "warn" | "neutral";
-  action?: ReactNode;
+  tip: string;
+  valueClass?: string;
 }) {
   return (
-    <div className="ui-card">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm text-[var(--muted)]">
-          <StatusDot tone={tone} />
-          {label}
-        </div>
-        {action}
-      </div>
-      <div className="mt-2 text-xl font-semibold tracking-tight">{value}</div>
-      {hint ? (
-        <p className="mt-1 text-sm capitalize text-[var(--muted)]">{hint}</p>
-      ) : null}
+    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--panel)] px-3 py-2.5 shadow-sm shadow-black/10">
+      <dt className="text-xs text-[var(--muted)]">
+        {label}
+        <InfoTip text={tip} />
+      </dt>
+      <dd className={`mt-1 text-base font-semibold tabular-nums ${valueClass}`}>
+        {value}
+      </dd>
     </div>
   );
 }

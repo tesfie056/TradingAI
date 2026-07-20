@@ -12,4 +12,5 @@ export {
   scenarioSafetyOverridesDailyGoal,
   scenarioZeroEligibleBlocksAuto,
   scenarioLegacyShortConflict,
+  scenarioMorningUnattendedResume,
 } from "./simulations";

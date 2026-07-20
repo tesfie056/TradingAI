@@ -3,7 +3,6 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { SafetyBanner } from "@/components/layout/SafetyBanner";
 import { useUiChrome } from "@/components/layout/UiChromeContext";
 
 /**
@@ -21,19 +20,17 @@ export function AiAssistantPage() {
     <div className="flex flex-col gap-5">
       <PageHeader
         title="AI Assistant"
-        description="The assistant opens as a floating window so answers keep loading if you change pages."
+        description="The assistant stays available as a floating panel while you move between pages."
       />
-      <SafetyBanner orderExecutionEnabled={false} />
-      <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-4 text-base">
+      <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--panel)] px-4 py-4 text-base shadow-sm shadow-black/10">
         <p>
-          Use the floating <strong>AI Assistant</strong> popup (top-right button
-          also opens it). Tasks run on the server — navigating away will not
-          cancel a running question.
+          Use the <strong>AI Assistant</strong> button in the header to open the
+          floating panel. Questions keep running if you change pages.
         </p>
         <p className="mt-3 text-sm text-[var(--muted)]">
-          Paper only · AI never submits orders ·{" "}
-          <Link href="/trade" className="underline">
-            Open Trade
+          Paper only · the assistant never submits orders ·{" "}
+          <Link href="/trade" className="underline underline-offset-2">
+            Open Positions
           </Link>{" "}
           for manual paper preview.
         </p>

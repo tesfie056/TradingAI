@@ -11,17 +11,17 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-      <div className="max-w-2xl">
+    <div className="mb-4 flex flex-col gap-2 sm:mb-5 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <div className="min-w-0 max-w-3xl">
         <h1 className="h1">{title}</h1>
         {description ? (
-          <p className="mt-2 text-base text-[var(--muted)] sm:text-lg">
+          <p className="mt-1.5 text-sm text-[var(--muted)] sm:text-base">
             {description}
           </p>
         ) : null}
       </div>
       {actions ? (
-        <div className="flex flex-wrap gap-2">{actions}</div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
       ) : null}
     </div>
   );

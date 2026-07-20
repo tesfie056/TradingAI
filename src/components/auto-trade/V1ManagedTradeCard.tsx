@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Panel } from "@/components/ui/Panel";
 import { AutoTradeInfoTip } from "@/components/auto-trade/AutoTradeInfoTip";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { formatTime } from "@/lib/format";
@@ -63,6 +62,21 @@ function protectionTone(label: string): string {
   return "text-zinc-200";
 }
 
+/** Friendly label for lifecycle states — avoids raw enum display. */
+function lifecycleLabel(state: string): string {
+  if (state.includes("ENTRY_PARTIALLY")) return "Partial entry";
+  if (state.includes("EXIT_PARTIALLY")) return "Partial exit";
+  if (state.includes("MANUAL") || state.includes("RECONCILIATION")) {
+    return "Manual intervention";
+  }
+  if (state.includes("OPEN") || state.includes("ACTIVE") || state.includes("HELD")) {
+    return "Open";
+  }
+  if (state.includes("EXIT")) return "Exiting";
+  if (state.includes("ENTRY")) return "Entering";
+  return state.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export function V1ManagedTradeCard({
   onNeedsIntervention,
 }: {
@@ -70,6 +84,7 @@ export function V1ManagedTradeCard({
 }) {
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showTech, setShowTech] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,10 +96,11 @@ export function V1ManagedTradeCard({
         setError(null);
         onNeedsIntervention?.(
           (res.counts?.needsIntervention ?? 0) > 0 ||
-            (res.active ?? []).some((t) =>
-              t.lifecycleState.includes("MANUAL") ||
-              t.lifecycleState.includes("RECONCILIATION") ||
-              t.criticalWarnings.length > 0,
+            (res.active ?? []).some(
+              (t) =>
+                t.lifecycleState.includes("MANUAL") ||
+                t.lifecycleState.includes("RECONCILIATION") ||
+                t.criticalWarnings.length > 0,
             ),
         );
       } catch (err) {
@@ -105,15 +121,15 @@ export function V1ManagedTradeCard({
   const maxHold = data?.config.maxHoldMinutes ?? 90;
 
   return (
-    <Panel
-      title="Current managed trade"
-      action={
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-zinc-100">Current managed trade</h3>
         <span className="text-xs text-[var(--muted)]">
           Version 1 managed
           <AutoTradeInfoTip text="Only Version 1 long positions are shown here. Legacy and external positions appear separately." />
         </span>
-      }
-    >
+      </div>
+
       {error ? (
         <div className="text-sm text-red-300">
           <p>{error}</p>
@@ -144,7 +160,7 @@ export function V1ManagedTradeCard({
             <p className="text-2xl font-semibold tracking-tight text-zinc-50">
               {trade.symbol}
             </p>
-            <p className="text-sm text-sky-200">{trade.lifecycleState.replace(/_/g, " ")}</p>
+            <p className="text-sm text-sky-200">{lifecycleLabel(trade.lifecycleState)}</p>
           </div>
 
           {(trade.lifecycleState.includes("PARTIAL") ||
@@ -168,10 +184,6 @@ export function V1ManagedTradeCard({
           )}
 
           <dl className="grid gap-2 text-sm text-zinc-300 sm:grid-cols-2 lg:grid-cols-3">
-            <div>
-              <dt className="text-xs text-[var(--muted)]">Ownership</dt>
-              <dd className="font-medium text-zinc-100">Version 1 managed</dd>
-            </div>
             <div>
               <dt className="text-xs text-[var(--muted)]">Quantity</dt>
               <dd className="font-medium text-zinc-100">
@@ -218,38 +230,56 @@ export function V1ManagedTradeCard({
                 {holdLabel(trade.holdingDurationMs)}
               </dd>
             </div>
-            <div>
-              <dt className="text-xs text-[var(--muted)]">
-                Maximum holding time
-                <AutoTradeInfoTip text="Version 1 exits managed trades that exceed this holding window." />
-              </dt>
-              <dd className="font-medium text-zinc-100">{maxHold} minutes</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-[var(--muted)]">Exit status</dt>
-              <dd className="font-medium text-zinc-100">
-                {trade.exitStatus?.replace(/_/g, " ") ??
-                  trade.exitReason?.replace(/_/g, " ") ??
-                  "Open"}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs text-[var(--muted)]">Last broker update</dt>
-              <dd className="font-medium text-zinc-100">
-                {formatTime(trade.lastBrokerUpdateAt ?? trade.updatedAt)}
-              </dd>
-            </div>
-            {trade.exitReason ? (
-              <div className="sm:col-span-2">
-                <dt className="text-xs text-[var(--muted)]">Current exit trigger</dt>
+          </dl>
+
+          <button
+            type="button"
+            className="ui-btn border border-[var(--border)] px-2.5 py-1 text-xs text-zinc-300 hover:bg-[var(--panel-elevated)]"
+            aria-expanded={showTech}
+            onClick={() => setShowTech((v) => !v)}
+          >
+            {showTech ? "Hide extra details" : "Show extra details"}
+          </button>
+
+          {showTech ? (
+            <dl className="grid gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-3 py-3 text-sm text-zinc-300 sm:grid-cols-2">
+              <div>
+                <dt className="text-xs text-[var(--muted)]">Ownership</dt>
+                <dd className="font-medium text-zinc-100">Version 1 managed</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-[var(--muted)]">
+                  Maximum holding time
+                  <AutoTradeInfoTip text="Version 1 exits managed trades that exceed this holding window." />
+                </dt>
+                <dd className="font-medium text-zinc-100">{maxHold} minutes</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-[var(--muted)]">Exit status</dt>
                 <dd className="font-medium text-zinc-100">
-                  {trade.exitReason.replace(/_/g, " ")}
+                  {trade.exitStatus?.replace(/_/g, " ") ??
+                    trade.exitReason?.replace(/_/g, " ") ??
+                    "Open"}
                 </dd>
               </div>
-            ) : null}
-          </dl>
+              <div>
+                <dt className="text-xs text-[var(--muted)]">Last broker update</dt>
+                <dd className="font-medium text-zinc-100">
+                  {formatTime(trade.lastBrokerUpdateAt ?? trade.updatedAt)}
+                </dd>
+              </div>
+              {trade.exitReason ? (
+                <div className="sm:col-span-2">
+                  <dt className="text-xs text-[var(--muted)]">Current exit trigger</dt>
+                  <dd className="font-medium text-zinc-100">
+                    {trade.exitReason.replace(/_/g, " ")}
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+          ) : null}
         </div>
       )}
-    </Panel>
+    </div>
   );
 }

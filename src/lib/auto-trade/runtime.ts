@@ -7,9 +7,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AutoTradeRuntimeState } from "@/lib/auto-trade/types";
 import { marketDayKey } from "@/lib/market/time";
+import { getTradingDataDir } from "@/lib/paths/data-root";
 
-const DIR = path.join(process.cwd(), "data");
-const FILE = path.join(DIR, "auto-trade-runtime.json");
+function runtimeFile(): string {
+  return path.join(getTradingDataDir(), "auto-trade-runtime.json");
+}
 
 const globalKey = "__tradingai_auto_trade_runtime__";
 
@@ -38,12 +40,12 @@ function getMemoryCache(): AutoTradeRuntimeState {
 }
 
 async function ensureDir() {
-  await mkdir(DIR, { recursive: true });
+  await mkdir(getTradingDataDir(), { recursive: true });
 }
 
 async function readPersisted(): Promise<AutoTradeRuntimeState | null> {
   try {
-    const raw = await readFile(FILE, "utf8");
+    const raw = await readFile(runtimeFile(), "utf8");
     const parsed = JSON.parse(raw) as AutoTradeRuntimeState;
     if (parsed && typeof parsed === "object") return parsed;
   } catch {
@@ -54,7 +56,7 @@ async function readPersisted(): Promise<AutoTradeRuntimeState | null> {
 
 async function persist(state: AutoTradeRuntimeState): Promise<void> {
   await ensureDir();
-  await writeFile(FILE, JSON.stringify(state, null, 2), "utf8");
+  await writeFile(runtimeFile(), JSON.stringify(state, null, 2), "utf8");
   const g = globalThis as typeof globalThis & {
     [globalKey]?: AutoTradeRuntimeState;
   };

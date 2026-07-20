@@ -45,26 +45,24 @@ import {
 } from "@/lib/trades/block-explanations";
 import type { OrderGateBlocker } from "@/lib/trades/types";
 import { Panel } from "@/components/ui/Panel";
+import { ActionBadge, ExecutionLockHint } from "@/components/ui/badges";
 import {
-  ActionBadge,
-  ConfidenceBar,
-  ExecutionLockHint,
-  RiskBadge,
-  ScoreBadges,
-  SentimentBadge,
-} from "@/components/ui/badges";
-import { BlockReasonList } from "@/components/ui/BlockReasonList";
+  ReadinessBadge,
+  readinessFromSignals,
+} from "@/components/ui/ReadinessBadge";
+import { AdvancedDetails } from "@/components/ui/AdvancedDetails";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
+import { ExpandableSection } from "@/components/ui/ExpandableSection";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { ScrollTable } from "@/components/ui/ScrollTable";
-import { SafetyStrip } from "@/components/ui/SafetyStrip";
 import { DashboardOverview } from "@/components/control-room/DashboardOverview";
+import { OpenPositionsPanel } from "@/components/control-room/OpenPositionsPanel";
 import { WatchlistDetailPanel } from "@/components/control-room/WatchlistDetailPanel";
 import { PaperTradeBlockPanel } from "@/components/trades/PaperTradeBlockPanel";
 import { PaperOrdersTable } from "@/components/trades/PaperOrdersTable";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { SafetyBanner } from "@/components/layout/SafetyBanner";
 import { useUiChrome } from "@/components/layout/UiChromeContext";
+import { useOptionalStockWorkspace } from "@/components/stock/StockWorkspaceContext";
 import {
   aiStatusDisplayLabel,
   withoutGlobalBlockKinds,
@@ -273,6 +271,7 @@ export function ControlRoom({
   const router = useRouter();
   const searchParams = useSearchParams();
   const { viewMode } = useUiChrome();
+  const stockWorkspace = useOptionalStockWorkspace();
   const simple = viewMode === "simple";
   const tradeParamsApplied = useRef(false);
   const [data, setData] = useState(initialData);
@@ -861,26 +860,27 @@ export function ControlRoom({
         <>
           <PageHeader
             title="Watchlist"
-            description="U.S. stocks on your desk. Prepare opens the trade page for manual paper preview."
+            description="Search monitored stocks, filter readiness, and open a stock to trade."
+            actions={
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => router.push("/dashboard")}
+                  className="ui-btn border border-amber-500/40 bg-amber-500/12 text-amber-50"
+                >
+                  Add stock
+                </button>
+                <button
+                  type="button"
+                  onClick={refresh}
+                  disabled={isPending}
+                  className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
+                >
+                  {isPending ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+            }
           />
-          <SafetyBanner orderExecutionEnabled={orderExecutionEnabled} />
-
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <PaperOnlyBanner detail="manual approval required" />
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={refresh}
-                disabled={isPending}
-                className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
-              >
-                {isPending ? "Refreshing…" : "Refresh"}
-              </button>
-              <p className="text-sm text-[var(--muted)]">
-                Updated {formatTime(data.loadedAt)}
-              </p>
-            </div>
-          </div>
 
           {error && (
             <div className="rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-base text-rose-100">
@@ -888,64 +888,7 @@ export function ControlRoom({
             </div>
           )}
 
-          {!simple && (
-            <AiHealthBanner
-              aiHealth={aiHealth}
-              onRefresh={() => void refreshAiHealth()}
-              busy={aiHealthBusy}
-            />
-          )}
-
-          {!simple && <MarketConditionBanner condition={marketCondition} />}
-
-          {(compareA || compareB) && !simple && (
-            <Panel title="Symbol compare">
-              <div className="mb-2 flex flex-wrap gap-2 text-sm">
-                <span className="text-[var(--muted)]">
-                  Select up to two symbols with Compare on each row.
-                </span>
-                <button
-                  type="button"
-                  className="underline text-amber-100"
-                  onClick={() => setCompareSymbols([null, null])}
-                >
-                  Clear
-                </button>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2 text-base">
-                {[compareA, compareB].map((d, i) => (
-                  <div
-                    key={i}
-                    className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-3"
-                  >
-                    {d ? (
-                      <>
-                        <p className="text-lg font-semibold">{d.symbol}</p>
-                        <p className="mt-1">
-                          {d.action} · {(d.confidence * 100).toFixed(0)}%
-                        </p>
-                        <p className="mt-1 text-[var(--muted)]">
-                          {d.explanation?.summary ?? d.reasons[0]}
-                        </p>
-                      </>
-                    ) : (
-                      <p className="text-[var(--muted)]">Slot {i + 1} empty</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </Panel>
-          )}
-
-      <Panel
-        title="Watchlist"
-        className="scroll-mt-28"
-        action={
-          <span className="text-sm text-[var(--muted)]">
-            {filteredRows.length} stocks
-          </span>
-        }
-      >
+      <Panel title="Watchlist tools" className="scroll-mt-28">
         <div id="watchlist" className="mb-4 flex flex-col gap-3">
           <div className="flex flex-wrap gap-2">
             <input
@@ -953,9 +896,23 @@ export function ControlRoom({
               onChange={(e) =>
                 setFilters((f) => ({ ...f, query: e.target.value }))
               }
-              placeholder="Find symbol…"
-              className={`${selectClass()} w-36 rounded-[var(--radius-sm)]`}
+              placeholder="Search within watchlist…"
+              className={`${selectClass()} w-44 rounded-[var(--radius-sm)]`}
             />
+            <select
+              value={filters.tradable}
+              onChange={(e) =>
+                setFilters((f) => ({
+                  ...f,
+                  tradable: e.target.value as WatchlistFilters["tradable"],
+                }))
+              }
+              className={`${selectClass()} rounded-[var(--radius-sm)]`}
+            >
+              <option value="ALL">All readiness</option>
+              <option value="tradable">Ready</option>
+              <option value="blocked">Waiting / blocked</option>
+            </select>
             <select
               value={filters.decision}
               onChange={(e) =>
@@ -971,101 +928,72 @@ export function ControlRoom({
               <option value="SELL">SELL</option>
               <option value="HOLD">HOLD</option>
             </select>
-            <select
-              value={filters.tradable}
-              onChange={(e) =>
-                setFilters((f) => ({
-                  ...f,
-                  tradable: e.target.value as WatchlistFilters["tradable"],
-                }))
-              }
-              className={`${selectClass()} rounded-[var(--radius-sm)]`}
-            >
-              <option value="ALL">All stocks</option>
-              <option value="tradable">Ready to preview</option>
-              <option value="blocked">Blocked</option>
-            </select>
-            {!simple && (
-              <>
-                <select
-                  value={filters.risk}
-                  onChange={(e) =>
-                    setFilters((f) => ({
-                      ...f,
-                      risk: e.target.value as WatchlistFilters["risk"],
-                    }))
-                  }
-                  className={`${selectClass()} rounded-[var(--radius-sm)]`}
-                >
-                  <option value="ALL">All risk</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </select>
-                <select
-                  value={`${filters.sortKey}:${filters.sortDir}`}
-                  onChange={(e) => {
-                    const [sortKey, sortDir] = e.target.value.split(":") as [
-                      WatchlistFilters["sortKey"],
-                      WatchlistFilters["sortDir"],
-                    ];
-                    setFilters((f) => ({ ...f, sortKey, sortDir }));
-                  }}
-                  className={`${selectClass()} rounded-[var(--radius-sm)]`}
-                >
-                  <option value="confidence:desc">Highest confidence</option>
-                  <option value="finalScore:desc">Highest score</option>
-                  <option value="symbol:asc">Symbol A–Z</option>
-                </select>
-              </>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={expandAll}
-              className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-sm"
-            >
-              Expand all
-            </button>
-            <button
-              type="button"
-              onClick={collapseAll}
-              className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-sm"
-            >
-              Collapse all
-            </button>
+            {!simple ? (
+              <details className="relative">
+                <summary className="ui-btn cursor-pointer list-none border border-[var(--border)] bg-[var(--panel-elevated)] text-sm">
+                  More
+                </summary>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <select
+                    value={filters.risk}
+                    onChange={(e) =>
+                      setFilters((f) => ({
+                        ...f,
+                        risk: e.target.value as WatchlistFilters["risk"],
+                      }))
+                    }
+                    className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                  >
+                    <option value="ALL">All risk</option>
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                  <select
+                    value={`${filters.sortKey}:${filters.sortDir}`}
+                    onChange={(e) => {
+                      const [sortKey, sortDir] = e.target.value.split(":") as [
+                        WatchlistFilters["sortKey"],
+                        WatchlistFilters["sortDir"],
+                      ];
+                      setFilters((f) => ({ ...f, sortKey, sortDir }));
+                    }}
+                    className={`${selectClass()} rounded-[var(--radius-sm)]`}
+                  >
+                    <option value="confidence:desc">Highest confidence</option>
+                    <option value="finalScore:desc">Highest score</option>
+                    <option value="symbol:asc">Symbol A–Z</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={expandAll}
+                    className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-sm"
+                  >
+                    Expand all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={collapseAll}
+                    className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-sm"
+                  >
+                    Collapse all
+                  </button>
+                </div>
+              </details>
+            ) : null}
           </div>
         </div>
 
         {filteredRows.length > 0 ? (
-          <ScrollTable
-            minWidthClass={
-              simple
-                ? "min-w-[28rem] md:min-w-[36rem]"
-                : "min-w-[36rem] md:min-w-[48rem]"
-            }
-          >
+          <ScrollTable minWidthClass="min-w-[28rem] md:min-w-[40rem]">
             <table className="w-full text-left text-base">
               <thead>
                 <tr className="border-b border-[var(--border)] text-sm text-[var(--muted)]">
                   <th className="py-3 pr-3 font-medium">Stock</th>
                   <th className="py-3 pr-3 font-medium">Price</th>
-                  {!simple && (
-                    <>
-                      <th className="hidden py-3 pr-3 font-medium md:table-cell">
-                        Trend
-                      </th>
-                      <th className="hidden py-3 pr-3 font-medium sm:table-cell">
-                        News
-                      </th>
-                    </>
-                  )}
-                  <th className="py-3 pr-3 font-medium">Decision</th>
-                  <th className="py-3 pr-3 font-medium">
-                    {simple ? "Confidence" : "Scores"}
-                  </th>
-                  <th className="py-3 font-medium">Status</th>
+                  <th className="py-3 pr-3 font-medium">State</th>
+                  <th className="py-3 pr-3 font-medium">Readiness</th>
+                  <th className="py-3 font-medium">Open</th>
                 </tr>
               </thead>
               <tbody>
@@ -1078,6 +1006,13 @@ export function ControlRoom({
                     row.blockReasons,
                     { marketClosed, executionOff },
                   );
+                  const readiness = readinessFromSignals({
+                    ready: canPrepare,
+                    marketClosed,
+                    executionOff,
+                    blockReasons: rowBlockReasons,
+                    action: d?.action ?? null,
+                  });
                   const newsForSym: SymbolNewsAnalysis | null =
                     newsBySymbol[row.symbol] ?? null;
                   const hist = (decisionHistory ?? []).filter(
@@ -1091,7 +1026,15 @@ export function ControlRoom({
                         : compareA && compareB
                           ? null
                           : (compareA ?? compareB);
-                  const colSpan = simple ? 5 : 7;
+                  const colSpan = 5;
+                  const statusLabel =
+                    d == null
+                      ? "Waiting"
+                      : d.action === "BUY"
+                        ? "Ready"
+                        : d.action === "SELL"
+                          ? "Sell signal"
+                          : "Hold";
 
                   return (
                     <Fragment key={row.symbol}>
@@ -1105,98 +1048,61 @@ export function ControlRoom({
                         <td className="py-3.5 pr-3">
                           <button
                             type="button"
-                            aria-expanded={isOpen}
                             className="text-left text-lg font-semibold hover:text-amber-200"
-                            onClick={() => toggleExpanded(row.symbol)}
+                            onClick={() => {
+                              if (stockWorkspace) {
+                                stockWorkspace.openStock(row.symbol);
+                              } else {
+                                toggleExpanded(row.symbol);
+                              }
+                            }}
                           >
                             {row.symbol}
-                            <span
-                              className={`ml-1.5 inline-block text-sm text-[var(--muted)] transition-transform duration-200 ${
-                                isOpen ? "rotate-90" : ""
-                              }`}
-                            >
-                              ▸
-                            </span>
                           </button>
-                          {!simple && (
-                            <button
-                              type="button"
-                              onClick={() => toggleCompare(row.symbol)}
-                              className={`mt-1 block text-sm ${
-                                compareSymbols[0] === row.symbol ||
-                                compareSymbols[1] === row.symbol
-                                  ? "text-amber-200"
-                                  : "text-[var(--muted)] hover:text-amber-100"
-                              }`}
-                            >
-                              Compare
-                            </button>
-                          )}
                         </td>
                         <td className="py-3.5 pr-3 text-lg tabular-nums">
-                          {formatNumber(row.last ?? row.mid)}
-                        </td>
-                        {!simple && (
-                          <>
-                            <td className="hidden py-3.5 pr-3 whitespace-nowrap md:table-cell">
-                              {trendLabel(d)}
-                            </td>
-                            <td className="hidden py-3.5 pr-3 sm:table-cell">
-                              <SentimentBadge
-                                sentiment={d?.newsContext?.overallSentiment}
-                              />
-                            </td>
-                          </>
-                        )}
-                        <td className="py-3.5 pr-3">
-                          <div className="flex flex-col gap-1">
-                            {d ? <ActionBadge action={d.action} /> : "—"}
-                            {d?.riskLevel || d?.riskStatus ? (
-                              <RiskBadge
-                                status={d.riskLevel ?? d.riskStatus}
-                              />
-                            ) : null}
-                          </div>
+                          {row.last != null || row.mid != null
+                            ? formatNumber(row.last ?? row.mid)
+                            : "Price unavailable"}
                         </td>
                         <td className="py-3.5 pr-3">
-                          {simple ? (
-                            d ? (
-                              <ConfidenceBar value={d.confidence} />
-                            ) : (
-                              "—"
-                            )
-                          ) : (
-                            <ScoreBadges scores={d?.scores} />
-                          )}
+                          <p className="text-sm font-medium text-zinc-100">
+                            {statusLabel}
+                          </p>
                         </td>
-                        <td className="py-3.5 max-w-[16rem]">
+                        <td className="py-3.5 pr-3 max-w-[14rem]">
                           {canPrepare && d ? (
-                            <div className="flex flex-wrap items-center gap-2">
-                              {executionOff && <ExecutionLockHint />}
-                              <button
-                                type="button"
-                                disabled={tradeBusy}
-                                onClick={() => navigatePrepare(d)}
-                                className="ui-btn border border-amber-500/40 bg-amber-500/12 text-sm text-amber-50 disabled:opacity-50"
-                              >
-                                Prepare
-                              </button>
+                            <div className="flex flex-col gap-1.5">
+                              <ReadinessBadge kind="ready" />
+                              {executionOff ? <ExecutionLockHint /> : null}
                             </div>
                           ) : (
-                            <div className="flex flex-wrap items-start gap-2">
-                              {executionOff && <ExecutionLockHint />}
-                              <BlockReasonList
-                                reasons={rowBlockReasons}
-                                emptyLabel={
-                                  executionOff || marketClosed
-                                    ? "See summary"
-                                    : "—"
-                                }
-                                maxVisible={simple ? 1 : 2}
-                                layout="inline"
-                              />
-                            </div>
+                            <ReadinessBadge
+                              kind={readiness.kind}
+                              detail={readiness.detail}
+                            />
                           )}
+                        </td>
+                        <td className="py-3.5">
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="ui-btn border border-amber-500/40 bg-amber-500/12 px-2.5 py-1 text-xs text-amber-50"
+                              onClick={() =>
+                                stockWorkspace?.openStock(row.symbol)
+                              }
+                            >
+                              Open
+                            </button>
+                            <button
+                              type="button"
+                              className="ui-btn border border-[var(--border)] px-2.5 py-1 text-xs"
+                              aria-expanded={isOpen}
+                              onClick={() => toggleExpanded(row.symbol)}
+                            >
+                              {isOpen ? "Hide" : "Why"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {d ? (
@@ -1209,6 +1115,7 @@ export function ControlRoom({
                           compareWith={otherCompare}
                           simple={simple}
                           colSpan={colSpan}
+                          whyWaiting={readiness.whyWaiting}
                           onAskAi={() => {
                             setSelectedSymbol(row.symbol);
                             router.push("/assistant");
@@ -1228,33 +1135,90 @@ export function ControlRoom({
           </EmptyState>
         )}
       </Panel>
+
+          {!simple ? (
+            <AdvancedDetails
+              title="Advanced watchlist tools"
+              summary="AI health, market condition, and symbol compare."
+            >
+              <div className="space-y-4">
+                <AiHealthBanner
+                  aiHealth={aiHealth}
+                  onRefresh={() => void refreshAiHealth()}
+                  busy={aiHealthBusy}
+                />
+                <MarketConditionBanner condition={marketCondition} />
+                {(compareA || compareB) && (
+                  <Panel title="Symbol compare">
+                    <div className="mb-2 flex flex-wrap gap-2 text-sm">
+                      <span className="text-[var(--muted)]">
+                        Select up to two symbols with Compare on each row.
+                      </span>
+                      <button
+                        type="button"
+                        className="underline text-amber-100"
+                        onClick={() => setCompareSymbols([null, null])}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 text-base">
+                      {[compareA, compareB].map((d, i) => (
+                        <div
+                          key={i}
+                          className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-4 py-3"
+                        >
+                          {d ? (
+                            <>
+                              <p className="text-lg font-semibold">{d.symbol}</p>
+                              <p className="mt-1">
+                                {d.action} · {(d.confidence * 100).toFixed(0)}%
+                              </p>
+                              <p className="mt-1 text-[var(--muted)]">
+                                {d.explanation?.summary ?? d.reasons[0]}
+                              </p>
+                            </>
+                          ) : (
+                            <p className="text-[var(--muted)]">
+                              Slot {i + 1} empty
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </Panel>
+                )}
+              </div>
+            </AdvancedDetails>
+          ) : null}
         </>
       ) : null}
 
       {page === "trade" ? (
         <>
           <PageHeader
-            title="Manual paper trade"
-            description="Preview and manually approve paper orders for U.S. stocks. AI never submits."
+            title="Positions"
+            description="Manage open paper positions and review recent orders."
+            actions={
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => router.push("/dashboard")}
+                  className="ui-btn border border-amber-500/40 bg-amber-500/12 text-amber-50"
+                >
+                  Open stock search
+                </button>
+                <button
+                  type="button"
+                  onClick={refresh}
+                  disabled={isPending}
+                  className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
+                >
+                  {isPending ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+            }
           />
-          <SafetyBanner orderExecutionEnabled={orderExecutionEnabled} />
-
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <PaperOnlyBanner detail="manual approval required" />
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={refresh}
-                disabled={isPending}
-                className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] text-[var(--foreground)] disabled:opacity-50"
-              >
-                {isPending ? "Refreshing…" : "Refresh"}
-              </button>
-              <p className="text-sm text-[var(--muted)]">
-                Updated {formatTime(data.loadedAt)}
-              </p>
-            </div>
-          </div>
 
           {error && (
             <div className="rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-base text-rose-100">
@@ -1262,13 +1226,31 @@ export function ControlRoom({
             </div>
           )}
 
+          <OpenPositionsPanel currency={currency} />
+
+      <ExpandableSection
+        title="More actions"
+        tip={
+          <InfoTip text="Optional tools. Prefer stock search on Overview for finding and trading symbols." />
+        }
+        summary="Manual paper trade and other secondary tools."
+        expandLabel="Show more actions"
+        collapseLabel="Hide more actions"
+      >
+      <ExpandableSection
+        title="Manual paper trade"
+        tip={
+          <InfoTip text="Optional manual paper order — separate from auto trading. You must approve every submit." />
+        }
+        summary="Preview and approve a paper order yourself."
+        expandLabel="Open manual trade"
+        collapseLabel="Hide manual trade"
+      >
       <div id="paper-trade-approval" className="scroll-mt-24">
-        <Panel title="Manual paper trade approval">
-          <SafetyStrip
-            orderExecutionEnabled={orderExecutionEnabled}
-            compact
-          />
-          <PaperOnlyBanner detail="AI cannot submit · confirm required" />
+        <div className="mb-4 rounded-[var(--radius-sm)] border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-50">
+          Paper only · you must approve · AI cannot submit
+          <InfoTip text="This form only creates paper orders after you preview and confirm. Live trading stays blocked." />
+        </div>
 
           {smallAccount?.enabled ? (
             <div className="mb-4 mt-4 rounded-[var(--radius-sm)] border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm text-amber-50">
@@ -1339,8 +1321,8 @@ export function ControlRoom({
                   }}
                   className={`${selectClass()} rounded-[var(--radius-sm)]`}
                 >
-                  <option value="buy">BUY</option>
-                  <option value="sell">SELL</option>
+                  <option value="buy">Buy</option>
+                  <option value="sell">Sell</option>
                 </select>
               </label>
               <label className="flex flex-col gap-1.5">
@@ -1744,10 +1726,23 @@ export function ControlRoom({
               </p>
             </div>
           )}
-        </Panel>
       </div>
+      </ExpandableSection>
+      </ExpandableSection>
 
-      <Panel title="Recent paper orders">
+      <ExpandableSection
+        title="Recent paper orders"
+        tip={
+          <InfoTip text="Your latest manually approved paper orders from this desk." />
+        }
+        summary={
+          trades.length > 0
+            ? `${trades.length} orders available`
+            : "No paper orders yet."
+        }
+        expandLabel="View orders"
+        collapseLabel="Hide orders"
+      >
         {trades.length > 0 ? (
           <PaperOrdersTable trades={trades} limit={10} />
         ) : (
@@ -1757,7 +1752,7 @@ export function ControlRoom({
             </p>
           </EmptyState>
         )}
-      </Panel>
+      </ExpandableSection>
         </>
       ) : null}
     </div>

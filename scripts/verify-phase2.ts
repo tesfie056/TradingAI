@@ -76,8 +76,9 @@ async function main() {
     "GOOGL",
   ]);
   assert.deepEqual(parseWatchlist("AAPL,AAPL,msft"), ["AAPL", "MSFT"]);
-  assert.ok(parseWatchlist("").includes("AAPL"));
-  assert.ok(parseWatchlist("!!!").includes("AAPL"));
+  assert.ok(parseWatchlist("").includes("F"));
+  assert.ok(parseWatchlist("!!!").includes("F"));
+  assert.ok(!parseWatchlist("").includes("AAPL"));
 
   // Safety: reject live
   assertPaperTradingOnly("https://paper-api.alpaca.markets");

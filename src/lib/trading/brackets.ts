@@ -9,6 +9,8 @@ export type BracketOrderInput = {
   takeProfitLimitPrice: number;
   stopLossStopPrice: number;
   time_in_force?: "day" | "gtc";
+  /** Stable Alpaca client_order_id for Version 1 ownership / idempotency. */
+  client_order_id?: string;
 };
 
 export type BracketOrderBody = {
@@ -20,6 +22,7 @@ export type BracketOrderBody = {
   order_class: "bracket";
   take_profit: { limit_price: string };
   stop_loss: { stop_price: string };
+  client_order_id?: string;
 };
 
 /**
@@ -39,7 +42,7 @@ export function buildBracketOrderBody(input: BracketOrderInput): BracketOrderBod
     }
   }
 
-  return {
+  const body: BracketOrderBody = {
     symbol: input.symbol.toUpperCase(),
     qty: String(input.qty),
     side: input.side,
@@ -53,4 +56,8 @@ export function buildBracketOrderBody(input: BracketOrderInput): BracketOrderBod
       stop_price: String(input.stopLossStopPrice),
     },
   };
+  if (input.client_order_id) {
+    body.client_order_id = input.client_order_id.slice(0, 48);
+  }
+  return body;
 }

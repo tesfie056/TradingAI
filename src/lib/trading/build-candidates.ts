@@ -55,40 +55,50 @@ export function buildRankedCandidates(input: {
     let qualified = false;
 
     const actionable =
-      (d.decisionLabel === "BUY" || d.action === "BUY") &&
+      d.decisionLabel === "BUY" &&
       Boolean(d.readyForManualPaperTrade) &&
       !rejectionReason;
 
     if (actionable && price != null && price > 0) {
+      const stopPct = cfg.defaultStopLossPct;
+      const tpPct = cfg.defaultTakeProfitPct;
       const proposal = buildLongProposal({
         symbol: d.symbol,
-        entry: price,
-        stopLossPct: cfg.defaultStopLossPct,
-        takeProfitPct: cfg.defaultTakeProfitPct,
+        entry: d.v1Strategy?.suggestedEntry ?? price,
+        stopLossPct: stopPct,
+        takeProfitPct: tpPct,
         confidence: d.confidence,
-        strategyName: "paper_watchlist_v1",
-        reason: d.explanation?.summary ?? d.reasons[0] ?? "BUY signal",
+        strategyName: d.v1Strategy?.strategyId ?? "v1-simple-long",
+        reason: d.v1Strategy?.primaryReason ?? d.reasons[0] ?? "BUY signal",
       });
-      proposedEntry = proposal.proposedEntry;
-      stopLoss = proposal.stopLoss;
-      takeProfit = proposal.takeProfit;
+      proposedEntry = d.v1Strategy?.suggestedEntry ?? proposal.proposedEntry;
+      stopLoss = d.v1Strategy?.suggestedStopLoss ?? proposal.stopLoss;
+      takeProfit = d.v1Strategy?.suggestedTakeProfit ?? proposal.takeProfit;
       const risk = Math.abs(proposedEntry - stopLoss);
       const reward = Math.abs(takeProfit - proposedEntry);
-      riskRewardRatio = risk > 0 ? Number((reward / risk).toFixed(3)) : null;
-      if (riskRewardRatio != null && riskRewardRatio >= 1) {
+      riskRewardRatio =
+        d.v1Strategy?.rewardToRisk ??
+        (risk > 0 ? Number((reward / risk).toFixed(3)) : null);
+      if (
+        riskRewardRatio != null &&
+        riskRewardRatio >= 1 &&
+        (!d.v1Strategy || d.v1Strategy.mandatoryFailed.length === 0)
+      ) {
         qualified = true;
-        qualificationReason = `BUY signal conf=${(d.confidence * 100).toFixed(0)}% R:R=${riskRewardRatio}`;
+        qualificationReason = `V1 BUY score=${((d.v1Strategy?.score ?? d.confidence) * 100).toFixed(0)}% R:R=${riskRewardRatio}`;
       } else {
-        rejectionReason = "Risk/reward below 1.0";
+        rejectionReason = "Risk/reward below 1.0 or mandatory conditions failed";
       }
     } else if (!rejectionReason) {
       rejectionReason =
         d.tradeBlockReasons?.[0] ??
-        (d.decisionLabel === "HOLD" || d.action === "HOLD"
+        (d.decisionLabel === "HOLD"
           ? "HOLD — no entry"
           : d.decisionLabel === "WATCH"
             ? "WATCH — not ready"
-            : "Not qualified for entry");
+            : d.decisionLabel === "SKIP"
+              ? "SKIP — blocked this scan"
+              : "Not qualified for entry");
     }
 
     return {
@@ -118,7 +128,12 @@ export function buildRankedCandidates(input: {
 
   rows.sort((a, b) => {
     if (a.qualified !== b.qualified) return a.qualified ? -1 : 1;
-    return b.confidenceScore - a.confidenceScore;
+    if (b.confidenceScore !== a.confidenceScore) {
+      return b.confidenceScore - a.confidenceScore;
+    }
+    const rr = (b.riskRewardRatio ?? 0) - (a.riskRewardRatio ?? 0);
+    if (rr !== 0) return rr;
+    return a.symbol.localeCompare(b.symbol);
   });
 
   const ranked = rows.map((r, i) => ({ ...r, rank: i + 1 }));

@@ -160,7 +160,23 @@ async function main() {
   );
   assert.ok(page.includes("TradingSettingsDrawer"));
   assert.ok(page.includes("AutoTradeControlsPanel"));
-  assert.ok(page.includes("engine?.engineState") || page.includes("engineStateLabel"));
+  const controlsUi = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "auto-trade",
+      "AutoTradeControlsPanel.tsx",
+    ),
+    "utf8",
+  );
+  assert.ok(
+    page.includes("engine?.engineState") ||
+      page.includes("engineStateLabel") ||
+      controlsUi.includes("engineState") ||
+      controlsUi.includes("engine?.engineState") ||
+      controlsUi.includes("Pause New Entries"),
+  );
   const controls = fs.readFileSync(
     path.join(
       process.cwd(),

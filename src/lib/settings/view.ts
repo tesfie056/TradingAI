@@ -63,7 +63,7 @@ export function getAppSettingsView(): AppSettingsView {
     automaticTradingAllowed: false,
     assetClass: "us_equity",
     watchlist: getWatchlist(),
-    watchlistEnv: process.env.WATCHLIST ?? "AAPL,MSFT,GOOGL,AMZN,NVDA",
+    watchlistEnv: process.env.WATCHLIST ?? "F,T,VZ,PFE,WBD,NOK,AAL,CMCSA,HPE,RIG,HBAN,CCL,ITUB,VALE,ERIC,HPQ",
     maxTradeAmount: getMaxNotionalPerTrade(),
     maxDailyPaperTrades: getMaxDailyPaperTrades(),
     smallAccount: getSmallAccountConfig(),

@@ -1,6 +1,6 @@
 /**
  * Configurable stock-universe service for paper auto-trading.
- * Starts from watchlist (soak or WATCHLIST), applies hard filters every scan.
+ * Starts from watchlist (V1 default, soak, or custom), applies hard filters every scan.
  * Never places orders.
  */
 
@@ -8,6 +8,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   getLatestQuotes,
+  getMarketClock,
   getRecentBars,
   lookupUsEquityAsset,
 } from "@/lib/alpaca/client";
@@ -21,20 +22,29 @@ import {
 } from "@/lib/universe/filters";
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
 import { evaluateStaticWatchlistEligibility } from "@/lib/universe/paper-soak-watchlist";
+import { toUserFacingUniverseReasons } from "@/lib/universe/user-reasons";
+import { isQuoteStale } from "@/lib/market/data-quality";
 
 const DIR = path.join(process.cwd(), "data");
 const SNAPSHOT_FILE = path.join(DIR, "universe-snapshot.json");
 
 export type UniverseSymbolSnapshot = {
   symbol: string;
+  name: string | null;
   price: number | null;
+  bid: number | null;
+  ask: number | null;
   spreadPercent: number | null;
   avgDailyVolume: number | null;
   eligible: boolean;
   reasons: string[];
+  userReasons: string[];
   assetStatus: string | null;
   tradable: boolean | null;
   shortable: boolean | null;
+  fractionable: boolean | null;
+  quoteTimestamp: string | null;
+  quoteStale: boolean | null;
 };
 
 export type UniverseFilterBreakdown = {
@@ -46,7 +56,18 @@ export type UniverseFilterBreakdown = {
   rejectedBySpread: number;
   rejectedOther: number;
   eligibleCount: number;
+  ineligibleCount: number;
   eligibleSymbols: string[];
+  ineligibleSymbols: string[];
+};
+
+export type UniverseFilterConfigSnapshot = {
+  minPrice: number;
+  maxPrice: number;
+  minAvgDailyVolume: number;
+  maxSpreadPercent: number;
+  excludeLeveragedInverseEtfs: boolean;
+  minEligibleSymbols: number;
 };
 
 export type UniverseScanResult = {
@@ -59,6 +80,10 @@ export type UniverseScanResult = {
   warnings: string[];
   /** When true, scanner must not fall back to the raw watchlist. */
   blockScanOnEmpty: boolean;
+  evaluatedAt: string;
+  marketOpen: boolean | null;
+  dataFreshness: "fresh" | "stale" | "unavailable" | "after_hours";
+  filterConfig: UniverseFilterConfigSnapshot;
 };
 
 function midFromQuote(q: AlpacaQuote | undefined): number | null {
@@ -81,11 +106,18 @@ function spreadFromQuote(q: AlpacaQuote | undefined): number | null {
   return (ask - bid) / mid;
 }
 
-function avgVolumeFromBars(bars: AlpacaBar[] | undefined): number | null {
+function avgVolumeFromBars(
+  bars: AlpacaBar[] | undefined,
+  options?: { excludeIncompleteLastBar?: boolean },
+): number | null {
   if (!bars || bars.length === 0) return null;
-  const vols = bars.map((b) => b.v).filter((v) => Number.isFinite(v) && v >= 0);
-  if (vols.length === 0) return null;
-  return vols.reduce((a, b) => a + b, 0) / vols.length;
+  let use = bars.filter((b) => Number.isFinite(b.v) && b.v >= 0);
+  if (options?.excludeIncompleteLastBar && use.length > 1) {
+    // Today's 1Day bar is incomplete during RTH and understates ADV.
+    use = use.slice(0, -1);
+  }
+  if (use.length === 0) return null;
+  return use.reduce((a, b) => a + b.v, 0) / use.length;
 }
 
 function classifyRejection(reasons: string[]): {
@@ -108,6 +140,19 @@ function classifyRejection(reasons: string[]): {
   return { price, liquidity, spread, other };
 }
 
+function activeFilterConfig(): UniverseFilterConfigSnapshot {
+  const cfg = getRiskTradingConfig();
+  const settings = getEffectiveRuntimeSettings();
+  return {
+    minPrice: cfg.minPrice,
+    maxPrice: cfg.maxPrice,
+    minAvgDailyVolume: cfg.minAvgDailyVolume,
+    maxSpreadPercent: cfg.maxSpreadPercent,
+    excludeLeveragedInverseEtfs: cfg.excludeLeveragedInverseEtfs,
+    minEligibleSymbols: settings.minEligibleSymbols,
+  };
+}
+
 export function buildUniverseWarnings(input: {
   watchlist: string[];
   staticPassed: number;
@@ -116,6 +161,8 @@ export function buildUniverseWarnings(input: {
   minEligibleSoft: number;
   minPrice?: number;
   maxPrice?: number;
+  marketOpen?: boolean | null;
+  dataFreshness?: UniverseScanResult["dataFreshness"];
 }): string[] {
   const warnings: string[] = [];
   const { watchlist, staticPassed, eligibleCount, scanned, minEligibleSoft } =
@@ -159,26 +206,81 @@ export function buildUniverseWarnings(input: {
     );
   }
 
+  if (input.marketOpen === false) {
+    warnings.push(
+      "Market is closed — after-hours quotes/spreads may look worse than regular-session conditions",
+    );
+  }
+  if (input.dataFreshness === "stale") {
+    warnings.push("Some market data quotes are stale");
+  }
+  if (input.dataFreshness === "unavailable") {
+    warnings.push("Market data was unavailable for one or more symbols");
+  }
+
   return warnings;
 }
 
 /**
  * Resolve eligible symbols from the configured watchlist.
  * Always re-validates dynamically (quotes, ADV, spread, asset status).
+ * Never places, cancels, or modifies orders/positions.
  */
 export async function resolveEligibleUniverse(options?: {
   symbols?: string[];
   requiresShorting?: boolean;
 }): Promise<UniverseScanResult> {
+  const evaluatedAt = new Date().toISOString();
+  const filterConfig = activeFilterConfig();
   const rawWatchlist = filterUsStockSymbols(
     options?.symbols ?? getWatchlist(),
   );
-  // Deduplicate again for safety
   const watchlist = [...new Set(rawWatchlist.map((s) => s.toUpperCase()))];
   const requiresShorting = options?.requiresShorting ?? false;
 
+  let marketOpen: boolean | null = null;
+  try {
+    const clock = await getMarketClock();
+    marketOpen = clock.isOpen;
+  } catch {
+    marketOpen = null;
+  }
+
   const staticCheck = evaluateStaticWatchlistEligibility(watchlist);
   const candidates = staticCheck.passed;
+
+  const emptyResult = (
+    scanned: UniverseSymbolSnapshot[],
+    rejected: UniverseFilterResult[],
+    breakdown: UniverseFilterBreakdown,
+    dataFreshness: UniverseScanResult["dataFreshness"],
+  ): UniverseScanResult => {
+    const warnings = buildUniverseWarnings({
+      watchlist,
+      staticPassed: breakdown.staticPassed,
+      eligibleCount: breakdown.eligibleCount,
+      scanned,
+      minEligibleSoft: filterConfig.minEligibleSymbols,
+      minPrice: filterConfig.minPrice,
+      maxPrice: filterConfig.maxPrice,
+      marketOpen,
+      dataFreshness,
+    });
+    return {
+      paperOnly: true,
+      watchlist,
+      scanned,
+      eligibleSymbols: breakdown.eligibleSymbols,
+      rejected,
+      breakdown,
+      warnings,
+      blockScanOnEmpty: true,
+      evaluatedAt,
+      marketOpen,
+      dataFreshness,
+      filterConfig,
+    };
+  };
 
   if (watchlist.length === 0 || candidates.length === 0) {
     const breakdown: UniverseFilterBreakdown = {
@@ -190,39 +292,46 @@ export async function resolveEligibleUniverse(options?: {
       rejectedBySpread: 0,
       rejectedOther: staticCheck.rejected.length,
       eligibleCount: 0,
+      ineligibleCount: staticCheck.rejected.length,
       eligibleSymbols: [],
+      ineligibleSymbols: staticCheck.rejected.map((r) => r.symbol),
     };
-    const warnings = buildUniverseWarnings({
-      watchlist,
-      staticPassed: 0,
-      eligibleCount: 0,
-      scanned: [],
-      minEligibleSoft: getEffectiveRuntimeSettings().minEligibleSymbols,
-    });
-    const result: UniverseScanResult = {
-      paperOnly: true,
-      watchlist,
-      scanned: [],
-      eligibleSymbols: [],
-      rejected: staticCheck.rejected.map((r) => ({
+    const result = emptyResult(
+      [],
+      staticCheck.rejected.map((r) => ({
         symbol: r.symbol,
         eligible: false,
         reasons: r.reasons,
       })),
       breakdown,
-      warnings,
-      blockScanOnEmpty: true,
-    };
+      "unavailable",
+    );
     await persistUniverseSnapshot(result).catch(() => undefined);
     return result;
   }
 
-  const [quotes, barsBySymbol] = await Promise.all([
-    getLatestQuotes(candidates).catch(() => [] as AlpacaQuote[]),
-    getRecentBars(candidates, "1Day", 20).catch(
-      () => ({} as Record<string, AlpacaBar[]>),
+  const quoteChunks: string[][] = [];
+  const barChunks: string[][] = [];
+  const CHUNK = 10;
+  for (let i = 0; i < candidates.length; i += CHUNK) {
+    quoteChunks.push(candidates.slice(i, i + CHUNK));
+    barChunks.push(candidates.slice(i, i + CHUNK));
+  }
+
+  const quoteLists = await Promise.all(
+    quoteChunks.map((chunk) =>
+      getLatestQuotes(chunk).catch(() => [] as AlpacaQuote[]),
     ),
-  ]);
+  );
+  const quotes = quoteLists.flat();
+
+  const barsBySymbol: Record<string, AlpacaBar[]> = {};
+  for (const chunk of barChunks) {
+    const part = await getRecentBars(chunk, "1Day", 20).catch(
+      () => ({} as Record<string, AlpacaBar[]>),
+    );
+    Object.assign(barsBySymbol, part);
+  }
 
   const quoteMap = new Map(quotes.map((q) => [q.symbol.toUpperCase(), q]));
 
@@ -243,17 +352,39 @@ export async function resolveEligibleUniverse(options?: {
     })),
   ];
   const eligibleSymbols: string[] = [];
+  const ineligibleSymbols: string[] = staticCheck.rejected.map((r) => r.symbol);
   let rejectedByPrice = 0;
   let rejectedByLiquidity = 0;
   let rejectedBySpread = 0;
   let rejectedOther = staticCheck.rejected.length;
+  let anyQuote = false;
+  let anyStale = false;
+  let anyMissingQuote = false;
 
   for (const symbol of candidates) {
     const quote = quoteMap.get(symbol);
     const asset = assetMap.get(symbol) ?? null;
     const price = midFromQuote(quote);
     const spreadPercent = spreadFromQuote(quote);
-    const avgDailyVolume = avgVolumeFromBars(barsBySymbol[symbol]);
+    const avgDailyVolume = avgVolumeFromBars(barsBySymbol[symbol], {
+      excludeIncompleteLastBar: marketOpen === true,
+    });
+    const quoteTimestamp = quote?.timestamp ?? null;
+    const quoteStale =
+      quoteTimestamp != null
+        ? isQuoteStale(quoteTimestamp, marketOpen === true)
+        : null;
+
+    if (quote) anyQuote = true;
+    else anyMissingQuote = true;
+    if (quoteStale === true) anyStale = true;
+
+    const reasonsExtra: string[] = [];
+    if (!quote) {
+      reasonsExtra.push("Current quote is unavailable");
+    } else if (quoteStale === true && marketOpen === true) {
+      reasonsExtra.push("Market data is stale");
+    }
 
     const filter = evaluateUniverseEligibility({
       symbol,
@@ -264,32 +395,56 @@ export async function resolveEligibleUniverse(options?: {
       tradable: asset?.tradable ?? null,
       assetClass: asset?.class ?? null,
       shortable: asset?.shortable ?? null,
+      fractionable: asset ? asset.fractionable : null,
+      assetLookupFailed: asset == null,
       requiresShorting,
     });
 
+    const reasons = [...new Set([...filter.reasons, ...reasonsExtra])];
+    // If we only added stale/unavailable extras, recompute eligibility
+    const eligible = reasons.length === 0;
+
     const row: UniverseSymbolSnapshot = {
       symbol,
+      name: asset?.name ?? null,
       price,
+      bid: quote?.bid ?? null,
+      ask: quote?.ask ?? null,
       spreadPercent,
       avgDailyVolume,
-      eligible: filter.eligible,
-      reasons: filter.reasons,
+      eligible,
+      reasons,
+      userReasons: toUserFacingUniverseReasons(reasons),
       assetStatus: asset?.status ?? null,
       tradable: asset?.tradable ?? null,
       shortable: asset?.shortable ?? null,
+      fractionable: asset?.fractionable ?? null,
+      quoteTimestamp,
+      quoteStale,
     };
     scanned.push(row);
-    if (filter.eligible) {
+    if (eligible) {
       eligibleSymbols.push(symbol);
     } else {
-      rejected.push(filter);
-      const c = classifyRejection(filter.reasons);
+      rejected.push({ symbol, eligible: false, reasons });
+      ineligibleSymbols.push(symbol);
+      const c = classifyRejection(reasons);
       if (c.price) rejectedByPrice += 1;
       if (c.liquidity) rejectedByLiquidity += 1;
       if (c.spread) rejectedBySpread += 1;
       if (c.other) rejectedOther += 1;
     }
   }
+
+  const dataFreshness: UniverseScanResult["dataFreshness"] = !anyQuote
+    ? "unavailable"
+    : marketOpen === false
+      ? "after_hours"
+      : anyStale
+        ? "stale"
+        : anyMissingQuote
+          ? "unavailable"
+          : "fresh";
 
   const breakdown: UniverseFilterBreakdown = {
     watchlistSize: watchlist.length,
@@ -300,16 +455,10 @@ export async function resolveEligibleUniverse(options?: {
     rejectedBySpread,
     rejectedOther,
     eligibleCount: eligibleSymbols.length,
+    ineligibleCount: ineligibleSymbols.length,
     eligibleSymbols: [...eligibleSymbols],
+    ineligibleSymbols: [...ineligibleSymbols],
   };
-
-  const warnings = buildUniverseWarnings({
-    watchlist,
-    staticPassed: candidates.length,
-    eligibleCount: eligibleSymbols.length,
-    scanned,
-    minEligibleSoft: getEffectiveRuntimeSettings().minEligibleSymbols,
-  });
 
   const result: UniverseScanResult = {
     paperOnly: true,
@@ -318,41 +467,102 @@ export async function resolveEligibleUniverse(options?: {
     eligibleSymbols,
     rejected,
     breakdown,
-    warnings,
+    warnings: buildUniverseWarnings({
+      watchlist,
+      staticPassed: candidates.length,
+      eligibleCount: eligibleSymbols.length,
+      scanned,
+      minEligibleSoft: filterConfig.minEligibleSymbols,
+      minPrice: filterConfig.minPrice,
+      maxPrice: filterConfig.maxPrice,
+      marketOpen,
+      dataFreshness,
+    }),
     blockScanOnEmpty: true,
+    evaluatedAt,
+    marketOpen,
+    dataFreshness,
+    filterConfig,
   };
   await persistUniverseSnapshot(result).catch(() => undefined);
   return result;
 }
 
+export type UniverseDashboardSymbol = {
+  symbol: string;
+  name: string | null;
+  status: "eligible" | "ineligible";
+  price: number | null;
+  userReason: string | null;
+};
+
 export type UniverseDashboardSnapshot = {
   paperOnly: true;
   updatedAt: string;
+  evaluatedAt: string;
   watchlistSize: number;
+  configuredSymbols: string[];
   staticPassed: number;
   rejectedByPrice: number;
   rejectedByLiquidity: number;
   rejectedBySpread: number;
   eligibleCount: number;
+  ineligibleCount: number;
   eligibleSymbols: string[];
+  ineligibleSymbols: string[];
+  symbols: UniverseDashboardSymbol[];
   warnings: string[];
+  marketOpen: boolean | null;
+  dataFreshness: UniverseScanResult["dataFreshness"];
+  filterConfig: UniverseFilterConfigSnapshot;
 };
 
 async function persistUniverseSnapshot(
   result: UniverseScanResult,
 ): Promise<void> {
   await mkdir(DIR, { recursive: true });
+  const symbols: UniverseDashboardSymbol[] = [
+    ...result.scanned.map((s) => ({
+      symbol: s.symbol,
+      name: s.name,
+      status: (s.eligible ? "eligible" : "ineligible") as
+        | "eligible"
+        | "ineligible",
+      price: s.price,
+      userReason: s.eligible
+        ? null
+        : (s.userReasons[0] ?? "Did not meet Version 1 filters"),
+    })),
+    ...result.rejected
+      .filter((r) => !result.scanned.some((s) => s.symbol === r.symbol))
+      .map((r) => ({
+        symbol: r.symbol,
+        name: null as string | null,
+        status: "ineligible" as const,
+        price: null as number | null,
+        userReason: toUserFacingUniverseReasons(r.reasons)[0] ?? null,
+      })),
+  ];
+
   const snap: UniverseDashboardSnapshot = {
     paperOnly: true,
     updatedAt: new Date().toISOString(),
+    evaluatedAt: result.evaluatedAt,
     watchlistSize: result.breakdown.watchlistSize,
+    configuredSymbols: result.watchlist,
     staticPassed: result.breakdown.staticPassed,
     rejectedByPrice: result.breakdown.rejectedByPrice,
     rejectedByLiquidity: result.breakdown.rejectedByLiquidity,
     rejectedBySpread: result.breakdown.rejectedBySpread,
     eligibleCount: result.breakdown.eligibleCount,
+    ineligibleCount: result.breakdown.ineligibleCount,
     eligibleSymbols: result.breakdown.eligibleSymbols,
+    ineligibleSymbols: result.breakdown.ineligibleSymbols,
+    symbols,
     warnings: result.warnings,
+    marketOpen: result.marketOpen,
+    dataFreshness: result.dataFreshness,
+    filterConfig: result.filterConfig,
   };
   await writeFile(SNAPSHOT_FILE, `${JSON.stringify(snap, null, 2)}\n`, "utf8");
 }

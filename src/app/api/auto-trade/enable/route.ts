@@ -1,11 +1,25 @@
 import { NextResponse } from "next/server";
 import { getAutoTradeStatus } from "@/lib/auto-trade/status";
+import { assertCanEnableAutoTrading } from "@/lib/auto-trade/enable-guards";
 import { setAutoTradingEnabled } from "@/lib/auto-trade/runtime-settings/service";
 import { monitorSafetyFlags } from "@/lib/monitor/safety";
 
 export const dynamic = "force-dynamic";
 
 export async function POST() {
+  const guard = await assertCanEnableAutoTrading();
+  if (!guard.ok) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: guard.error,
+        code: guard.code,
+        ...monitorSafetyFlags(),
+      },
+      { status: 400 },
+    );
+  }
+
   const result = await setAutoTradingEnabled(true, "ui");
   if (!result.ok) {
     return NextResponse.json(

@@ -1,10 +1,16 @@
 /**
- * Risk-gated paper order submission.
+ * Risk-gated paper order submission with Version 1 lifecycle ownership.
  * Strategy proposes → risk validates → bracket order (or reject).
  * Never called by AI directly for unrestricted orders.
  */
 
-import { getAccount, getOpenOrders, getPositions, placePaperOrder } from "@/lib/alpaca/client";
+import {
+  findOrderByClientOrderId,
+  getAccount,
+  getOpenOrders,
+  getPositions,
+  placePaperOrder,
+} from "@/lib/alpaca/client";
 import type { AlpacaOrder } from "@/lib/alpaca/types";
 import { getAutoMaxNotionalPerTrade } from "@/lib/config";
 import { getRiskTradingConfig } from "@/lib/config/risk-config";
@@ -19,6 +25,13 @@ import {
   proposalToLogTrade,
 } from "@/lib/trading/decision-log";
 import type { TradeProposal } from "@/lib/trading/proposal";
+import {
+  classifyPosition,
+  selectV1EntryCandidate,
+  submitV1BracketEntry,
+  type V1LifecycleTrade,
+} from "@/lib/trading/v1-lifecycle";
+import { V1_STRATEGY_VERSION } from "@/lib/strategy/v1-simple-long";
 
 export type SubmitApprovedResult =
   | {
@@ -26,21 +39,27 @@ export type SubmitApprovedResult =
       order: AlpacaOrder;
       qty: number;
       notional: number;
+      trade: V1LifecycleTrade;
     }
   | {
       ok: false;
       code: string;
       reason: string;
+      trade?: V1LifecycleTrade;
     };
 
 /**
  * Validate proposal with risk engine and submit a bracket paper order if approved.
+ * Creates a Version 1 lifecycle record with stable client_order_id.
  */
 export async function submitRiskApprovedEntry(input: {
   proposal: TradeProposal;
   marketOpen: boolean;
   closeAtIso?: string | null;
   marketState?: string;
+  scanId?: string | null;
+  decisionId?: string | null;
+  strategyVersion?: string;
 }): Promise<SubmitApprovedResult> {
   const proposal = input.proposal;
   const cfg = getRiskTradingConfig();
@@ -50,6 +69,26 @@ export async function submitRiskApprovedEntry(input: {
     getOpenOrders(50),
     readRiskRuntime(),
   ]);
+
+  // Block Version 1 BUY when legacy/external conflict (esp. AAPL short)
+  const classification = positions
+    .filter((p) => p.symbol.toUpperCase() === proposal.symbol.toUpperCase())
+    .map((position) =>
+      classifyPosition({
+        position,
+        v1Trades: [],
+        openOrders,
+      }),
+    )[0];
+  if (classification?.blocksV1Buy) {
+    return {
+      ok: false,
+      code: classification.isLegacyAaplShort
+        ? "legacy_aapl_short"
+        : "ownership_conflict",
+      reason: classification.reason,
+    };
+  }
 
   const equity = Number(account.equity);
   const openSymbols = positions
@@ -61,7 +100,6 @@ export async function submitRiskApprovedEntry(input: {
       if (!["new", "accepted", "pending_new", "partially_filled"].includes(status)) {
         return false;
       }
-      // Parent entry legs — exclude stop/limit children when possible
       return o.side === "buy" || o.side === "sell";
     })
     .map((o) => o.symbol.toUpperCase());
@@ -117,50 +155,70 @@ export async function submitRiskApprovedEntry(input: {
     };
   }
 
-  try {
-    const order = await placePaperOrder({
-      symbol: proposal.symbol,
-      qty: risk.qty,
-      side: proposal.direction === "long" ? "buy" : "sell",
-      type: "market",
-      time_in_force: "day",
-      order_class: "bracket",
-      take_profit: { limit_price: risk.takeProfitPrice },
-      stop_loss: { stop_price: risk.stopLossPrice },
-    });
-
-    await appendDecisionLog({
-      symbol: proposal.symbol,
-      strategy: proposal.strategyName,
-      marketState: input.marketState ?? (input.marketOpen ? "open" : "closed"),
-      indicators: {
-        ...proposal.supportingIndicators,
-        defaultStopLossPct: cfg.defaultStopLossPct,
-        defaultTakeProfitPct: cfg.defaultTakeProfitPct,
-      },
-      confidence: proposal.confidence,
-      proposedTrade: proposalToLogTrade(proposal),
-      riskValidation: {
-        approved: true,
-        code: null,
-        reason: null,
-        qty: risk.qty,
-        notional: risk.notional,
-      },
-      finalAction: "submitted",
-      rejectionReason: null,
-      alpacaOrderId: order.id,
-      error: null,
-    });
-
+  if (proposal.direction !== "long") {
     return {
-      ok: true,
-      order,
-      qty: risk.qty,
-      notional: risk.notional,
+      ok: false,
+      code: "short_not_supported",
+      reason: "Version 1 only submits long entries",
     };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Broker rejected order";
+  }
+
+  const candidate = await selectV1EntryCandidate({
+    symbol: proposal.symbol,
+    strategyVersion: input.strategyVersion ?? V1_STRATEGY_VERSION,
+    scanId: input.scanId ?? null,
+    decisionId: input.decisionId ?? null,
+    entryDecisionId: input.decisionId ?? null,
+    requestedQty: risk.qty,
+    plannedEntry: proposal.proposedEntry,
+    stopLoss: risk.stopLossPrice,
+    takeProfit: risk.takeProfitPrice,
+    expectedRisk:
+      risk.qty > 0
+        ? Number(
+            (
+              (proposal.proposedEntry - risk.stopLossPrice) *
+              risk.qty
+            ).toFixed(4),
+          )
+        : null,
+    rewardToRisk:
+      risk.stopLossPrice < proposal.proposedEntry
+        ? Number(
+            (
+              (risk.takeProfitPrice - proposal.proposedEntry) /
+              (proposal.proposedEntry - risk.stopLossPrice)
+            ).toFixed(3),
+          )
+        : null,
+  });
+
+  if (!candidate.ok) {
+    return {
+      ok: false,
+      code: candidate.code,
+      reason: candidate.reason,
+    };
+  }
+
+  const submitted = await submitV1BracketEntry({
+    trade: candidate.trade,
+    placeOrder: async ({ symbol, qty, takeProfit, stopLoss, clientOrderId }) =>
+      placePaperOrder({
+        symbol,
+        qty,
+        side: "buy",
+        type: "market",
+        time_in_force: "day",
+        order_class: "bracket",
+        take_profit: { limit_price: takeProfit },
+        stop_loss: { stop_price: stopLoss },
+        client_order_id: clientOrderId,
+      }),
+    findByClientOrderId: (id) => findOrderByClientOrderId(id),
+  });
+
+  if (!submitted.ok) {
     await appendDecisionLog({
       symbol: proposal.symbol,
       strategy: proposal.strategyName,
@@ -176,10 +234,49 @@ export async function submitRiskApprovedEntry(input: {
         notional: risk.notional,
       },
       finalAction: "rejected_broker",
-      rejectionReason: message,
+      rejectionReason: submitted.reason,
       alpacaOrderId: null,
-      error: message,
+      error: submitted.reason,
     });
-    return { ok: false, code: "broker_rejected", reason: message };
+    return {
+      ok: false,
+      code: submitted.code,
+      reason: submitted.reason,
+      trade: submitted.trade,
+    };
   }
+
+  await appendDecisionLog({
+    symbol: proposal.symbol,
+    strategy: proposal.strategyName,
+    marketState: input.marketState ?? (input.marketOpen ? "open" : "closed"),
+    indicators: {
+      ...proposal.supportingIndicators,
+      defaultStopLossPct: cfg.defaultStopLossPct,
+      defaultTakeProfitPct: cfg.defaultTakeProfitPct,
+      v1TradeId: submitted.trade.tradeId,
+      clientOrderId: submitted.trade.clientOrderId,
+    },
+    confidence: proposal.confidence,
+    proposedTrade: proposalToLogTrade(proposal),
+    riskValidation: {
+      approved: true,
+      code: null,
+      reason: null,
+      qty: risk.qty,
+      notional: risk.notional,
+    },
+    finalAction: "submitted",
+    rejectionReason: null,
+    alpacaOrderId: submitted.order.id,
+    error: null,
+  });
+
+  return {
+    ok: true,
+    order: submitted.order,
+    qty: risk.qty,
+    notional: risk.notional,
+    trade: submitted.trade,
+  };
 }

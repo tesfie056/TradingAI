@@ -54,7 +54,7 @@ export type UiSettings = {
 };
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
-  watchlistDraft: "AAPL,MSFT,GOOGL,AMZN,NVDA",
+  watchlistDraft: "F,T,VZ,PFE,WBD,NOK,AAL,CMCSA,HPE,RIG,HBAN,CCL,ITUB,VALE,ERIC,HPQ",
   maxTradeAmount: 500,
   maxDailyPaperTrades: 5,
   minConfidence: 0.45,

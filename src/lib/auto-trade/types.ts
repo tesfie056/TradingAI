@@ -18,6 +18,8 @@ import type {
 
 export type TraderDashboardSnapshot = {
   mode: "paper";
+  /** True when the latest Alpaca paper account/positions fetch succeeded. */
+  alpacaConnected: boolean;
   marketOpen: boolean | null;
   symbolsScanned: number;
   qualifiedSymbols: number;
@@ -54,8 +56,27 @@ export type TraderDashboardSnapshot = {
     rejectedByLiquidity: number;
     rejectedBySpread: number;
     eligibleCount: number;
+    ineligibleCount: number;
     eligibleSymbols: string[];
+    ineligibleSymbols: string[];
+    configuredSymbols: string[];
+    symbols: {
+      symbol: string;
+      name: string | null;
+      status: "eligible" | "ineligible";
+      price: number | null;
+      userReason: string | null;
+    }[];
     warnings: string[];
+    evaluatedAt: string | null;
+    dataFreshness: string | null;
+    marketOpen: boolean | null;
+    filterConfig: {
+      minPrice: number;
+      maxPrice: number;
+      minAvgDailyVolume: number;
+      maxSpreadPercent: number;
+    } | null;
   } | null;
 };
 

@@ -273,6 +273,86 @@ export function analyzeStockTechnicals(input: {
   };
 }
 
+/** Simple moving average of closes. Requires `period` closes. */
+export function simpleMovingAverage(
+  closes: number[],
+  period: number,
+): number | null {
+  if (period < 1 || closes.length < period) return null;
+  const slice = closes.slice(-period);
+  if (slice.some((c) => !(c > 0))) return null;
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+export type MaAlignment = {
+  fastMa: number | null;
+  slowMa: number | null;
+  priceAboveBoth: boolean;
+  fastAboveSlow: boolean;
+  slopeFast: number | null;
+  slopeSlow: number | null;
+  barCount: number;
+};
+
+/**
+ * Fast/slow SMA alignment from bar closes.
+ * Slope = (current MA - prior MA) / prior MA using one extra bar when available.
+ */
+export function computeMaAlignment(
+  bars: AlpacaBar[],
+  fastPeriod: number,
+  slowPeriod: number,
+): MaAlignment {
+  const closes = bars.map((b) => b.c).filter((c) => c > 0);
+  const need = Math.max(fastPeriod, slowPeriod) + 1;
+  if (closes.length < Math.max(fastPeriod, slowPeriod)) {
+    return {
+      fastMa: null,
+      slowMa: null,
+      priceAboveBoth: false,
+      fastAboveSlow: false,
+      slopeFast: null,
+      slopeSlow: null,
+      barCount: closes.length,
+    };
+  }
+  const fastMa = simpleMovingAverage(closes, fastPeriod);
+  const slowMa = simpleMovingAverage(closes, slowPeriod);
+  const price = closes[closes.length - 1] ?? null;
+  const priceAboveBoth =
+    price != null &&
+    fastMa != null &&
+    slowMa != null &&
+    price > fastMa &&
+    price > slowMa;
+  const fastAboveSlow =
+    fastMa != null && slowMa != null && fastMa > slowMa;
+
+  let slopeFast: number | null = null;
+  let slopeSlow: number | null = null;
+  if (closes.length >= need) {
+    const prior = closes.slice(0, -1);
+    const prevFast = simpleMovingAverage(prior, fastPeriod);
+    const prevSlow = simpleMovingAverage(prior, slowPeriod);
+    if (prevFast != null && prevFast > 0 && fastMa != null) {
+      slopeFast = (fastMa - prevFast) / prevFast;
+    }
+    if (prevSlow != null && prevSlow > 0 && slowMa != null) {
+      slopeSlow = (slowMa - prevSlow) / prevSlow;
+    }
+  }
+
+  return {
+    fastMa,
+    slowMa,
+    priceAboveBoth,
+    fastAboveSlow,
+    slopeFast,
+    slopeSlow,
+    barCount: closes.length,
+  };
+}
+
 /** Map technical lean to a 0–1 technical score (0.5 = neutral). */
 export function technicalLeanToScore(lean: number): number {
   // lean roughly in [-4, 4]

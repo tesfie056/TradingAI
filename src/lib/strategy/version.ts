@@ -26,15 +26,15 @@ export type StrategyConfig = {
 
 const DEFAULT: StrategyConfig = {
   version: process.env.STRATEGY_VERSION?.trim() || "v1.0.0",
-  name: "Paper Intelligence v1",
+  name: "v1-simple-long",
   weights: {
     technical: 0.32,
     market: 0.18,
-    news: 0.12,
+    news: 0.05,
     risk: 0.14,
-    volume: 0.1,
-    momentum: 0.08,
-    liquidity: 0.06,
+    volume: 0.12,
+    momentum: 0.12,
+    liquidity: 0.07,
   },
   smallAccount: {
     defaultNotional: 5,
@@ -43,7 +43,7 @@ const DEFAULT: StrategyConfig = {
     avoidOtc: true,
   },
   changelog: [
-    "v1.0.0 — Extended scores (liquidity/volume/momentum), SKIP/WATCH labels, training loop.",
+    "v1.0.0 — v1-simple-long: SMA trend + momentum + volume + explicit conditions (planning only).",
   ],
 };
 

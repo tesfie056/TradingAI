@@ -108,7 +108,16 @@ async function main() {
   );
   assert.ok(emergencySrc.includes("activateEmergencyStop"));
   assert.ok(emergencySrc.includes("closeAllOpenPositions"));
+  assert.ok(emergencySrc.includes("openPositionsPreserved"));
   assert.ok(/preserve|Preserves open positions/i.test(emergencySrc));
+  const activateBody = emergencySrc.slice(
+    emergencySrc.indexOf("export async function activateEmergencyStop"),
+    emergencySrc.indexOf("export async function closeAllOpenPositions"),
+  );
+  assert.ok(
+    !activateBody.includes("closeAllPositions("),
+    "activateEmergencyStop must not call closeAllPositions(",
+  );
   console.log("✓ emergency stop preserves positions; close-all is separate");
 
   const closeSrc = fs.readFileSync(
@@ -125,6 +134,20 @@ async function main() {
   );
   assert.ok(closeSrc.includes("confirm"));
   console.log("✓ close-all requires confirm:true");
+
+  const bannerSrc = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "ui",
+      "UnprotectedPositionsBanner.tsx",
+    ),
+    "utf8",
+  );
+  assert.ok(bannerSrc.includes("Unprotected open position"));
+  assert.ok(bannerSrc.includes("Close All Positions"));
+  console.log("✓ unprotected-position warning component present");
 
   const reconSrc = fs.readFileSync(
     path.join(process.cwd(), "src", "lib", "trading", "reconcile.ts"),
@@ -144,10 +167,44 @@ async function main() {
     ),
     "utf8",
   );
-  assert.ok(page.includes("Emergency Stop"));
-  assert.ok(page.includes("Close all positions"));
-  assert.ok(page.includes("Top candidates"));
+  const safetyUi = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "auto-trade",
+      "SafetyActionsCard.tsx",
+    ),
+    "utf8",
+  );
+  const advancedUi = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "auto-trade",
+      "AdvancedAutoTradeDetails.tsx",
+    ),
+    "utf8",
+  );
+  assert.ok(page.includes("SafetyActionsCard") || safetyUi.includes("Emergency Stop"));
+  assert.ok(
+    /Close [Aa]ll [Pp]ositions/.test(safetyUi) || /Close [Aa]ll [Pp]ositions/.test(page),
+    "Auto Trade page must document Close All as a separate action",
+  );
+  assert.ok(
+    safetyUi.includes("Open positions stay open") ||
+      safetyUi.includes("preserves open positions") ||
+      safetyUi.includes("Separate from Emergency Stop") ||
+      safetyUi.includes("remain open"),
+    "Emergency Stop must stay separate from Close All in UI copy",
+  );
+  assert.ok(advancedUi.includes("Top candidates") || page.includes("Top candidates"));
   assert.ok(!page.includes("AUTO_PAPER_TRADING_ENABLED=false"));
+  assert.ok(
+    page.includes("UnprotectedPositionsBanner"),
+    "Auto Trade page must surface unprotected-position warnings",
+  );
   console.log("✓ trader dashboard shows ops controls without env dump");
 
   assert.throws(

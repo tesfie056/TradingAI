@@ -171,10 +171,12 @@ async function main() {
   assert.equal(isPaperOrderExecutionEnabled(), false);
 
   // --- config defaults ---
+  // maxTradesPerDay seeds from env (default 3); soak profile would lower to 2.
   delete process.env.MAX_PAPER_TRADE_NOTIONAL;
   delete process.env.MAX_DAILY_PAPER_TRADES;
+  delete process.env.PAPER_SOAK_PROFILE;
   assert.equal(getMaxPaperTradeNotional(), 500);
-  assert.equal(getMaxDailyPaperTrades(), 5);
+  assert.equal(getMaxDailyPaperTrades(), 3);
 
   // --- API routes exist; submit requires manual path ---
   assert.ok(fs.existsSync("src/app/api/trades/preview/route.ts"));

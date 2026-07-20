@@ -14,11 +14,17 @@ export const BLOCKED_TRADING_HOSTS = [
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
 import { getEffectiveRuntimeSettings } from "@/lib/auto-trade/runtime-settings/service";
 import { getPaperSoakWatchlist } from "@/lib/universe/paper-soak-watchlist";
+import {
+  isDefaultishWatchlist,
+  isLegacyMegaCapWatchlist,
+  V1_DEFAULT_WATCHLIST,
+  v1WatchlistCsv,
+} from "@/lib/universe/v1-default-watchlist";
 
 /** Parse a comma-separated U.S. stock watchlist (crypto/non-equity rejected). */
 export function parseWatchlist(raw: string | undefined | null): string[] {
   if (!raw || !raw.trim()) {
-    return ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
+    return [...V1_DEFAULT_WATCHLIST];
   }
 
   const seen = new Set<string>();
@@ -35,26 +41,21 @@ export function parseWatchlist(raw: string | undefined | null): string[] {
 
   const stocksOnly = filterUsStockSymbols(symbols);
 
-  return stocksOnly.length > 0
-    ? stocksOnly
-    : ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
+  return stocksOnly.length > 0 ? stocksOnly : [...V1_DEFAULT_WATCHLIST];
 }
 
 /**
  * Watchlist used for monitor / auto-trade scans.
- * Runtime settings take precedence; paper-soak overrides mega-cap defaults.
+ * Runtime settings take precedence; paper-soak overrides defaultish lists.
  */
 export function getWatchlist(): string[] {
   const s = getEffectiveRuntimeSettings();
-  if (s.paperSoakProfile) {
-    const mega = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
-    const isMega =
-      s.watchlist.length === 0 ||
-      (s.watchlist.length <= 5 &&
-        s.watchlist.every((x) => mega.includes(x.toUpperCase())));
-    if (isMega) {
-      return getPaperSoakWatchlist();
-    }
+  if (s.paperSoakProfile && isDefaultishWatchlist(s.watchlist)) {
+    return getPaperSoakWatchlist();
+  }
+  // Migrate legacy mega-cap defaults to Version 1 without requiring a settings rewrite.
+  if (isLegacyMegaCapWatchlist(s.watchlist)) {
+    return [...V1_DEFAULT_WATCHLIST];
   }
   const list = s.watchlist;
   return list.length > 0 ? list : parseWatchlist(process.env.WATCHLIST);
@@ -63,6 +64,16 @@ export function getWatchlist(): string[] {
 /** Raw WATCHLIST env (ignores runtime override) — for locked/env display. */
 export function getConfiguredWatchlistEnv(): string[] {
   return parseWatchlist(process.env.WATCHLIST);
+}
+
+/** CSV of Version 1 default symbols (documentation / settings display). */
+export function getV1DefaultWatchlistCsv(): string {
+  return v1WatchlistCsv();
+}
+
+/** @deprecated Use isLegacyMegaCapWatchlist — kept for call-site clarity. */
+export function isMegaCapWatchlist(list: string[]): boolean {
+  return isLegacyMegaCapWatchlist(list);
 }
 
 export function isPaperOrderExecutionEnabled(): boolean {

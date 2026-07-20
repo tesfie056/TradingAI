@@ -38,8 +38,9 @@ async function main() {
     "utf8",
   );
   assert.ok(page.includes("AutoTradeControlsPanel"));
-  assert.ok(page.indexOf("AutoTradeControlsPanel") < page.indexOf("Mode"));
-  console.log("✓ Auto Trade Controls panel above summary cards");
+  assert.ok(page.includes("AutoTradeStatusHeader"));
+  assert.ok(page.includes("SafetyActionsCard") || page.includes("AutoTradeControlsPanel"));
+  console.log("✓ Auto Trade Controls panel wired into operator desk");
 
   const controls = fs.readFileSync(
     path.join(
@@ -51,16 +52,66 @@ async function main() {
     ),
     "utf8",
   );
+  const safety = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "auto-trade",
+      "SafetyActionsCard.tsx",
+    ),
+    "utf8",
+  );
   assert.ok(controls.includes('Execution: ${executionOn ? "ON" : "OFF"}'));
   assert.ok(controls.includes('Auto Trading: ${autoOn ? "ON" : "OFF"}'));
-  assert.ok(controls.includes("Pause Engine") || controls.includes("Resume Engine"));
-  assert.ok(controls.includes("Emergency Stop"));
-  assert.ok(controls.includes("Close All Positions"));
+  assert.ok(
+    controls.includes("Pause Engine") ||
+      controls.includes("Resume Engine") ||
+      controls.includes("Pause New Entries") ||
+      controls.includes("Resume New Entries"),
+  );
+  assert.ok(safety.includes("Emergency Stop"));
+  assert.ok(safety.includes("Close All Positions"));
+  assert.ok(controls.includes("SafetyActionsCard"));
   assert.ok(controls.includes("Clear Kill Switch") || controls.includes("Clear Emergency"));
-  assert.ok(controls.includes("executionEnabled"));
+  assert.ok(
+    controls.includes("executionEnabled") ||
+      controls.includes("execution/enable") ||
+      controls.includes("Paper Execution"),
+  );
   assert.ok(controls.includes("blockingReasons"));
   assert.ok(controls.includes("ConfirmActionModal"));
-  assert.ok(!controls.includes("window.confirm"));
+  // Comments may mention window.confirm; actual calls are forbidden.
+  assert.ok(
+    !/\bwindow\.confirm\s*\(/.test(controls),
+    "Auto Trade controls must not call window.confirm(",
+  );
+  assert.ok(
+    !/\bwindow\.alert\s*\(/.test(controls),
+    "Auto Trade controls must not call window.alert(",
+  );
+  assert.ok(
+    !/\bwindow\.prompt\s*\(/.test(controls),
+    "Auto Trade controls must not call window.prompt(",
+  );
+
+  const emergencySrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "lib", "trading", "emergency.ts"),
+    "utf8",
+  );
+  const activateBody = emergencySrc.slice(
+    emergencySrc.indexOf("export async function activateEmergencyStop"),
+    emergencySrc.indexOf("export async function closeAllOpenPositions"),
+  );
+  assert.ok(
+    !activateBody.includes("closeAllPositions("),
+    "Emergency Stop must not liquidate positions",
+  );
+  assert.ok(
+    safety.includes("preserves open positions") ||
+      safety.includes("remain open") ||
+      safety.includes("Close All Positions"),
+  );
   console.log("✓ Execution/Auto toggles visible while OFF; emergency + close-all present");
 
   await resetRuntimeSettingsCacheForTests();

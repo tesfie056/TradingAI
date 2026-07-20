@@ -17,18 +17,20 @@ import type {
   SettingsAuditEntry,
 } from "@/lib/auto-trade/runtime-settings/types";
 import { DEFAULT_PAPER_SOAK_WATCHLIST } from "@/lib/universe/paper-soak-watchlist";
-
-const MEGA_CAP_DEFAULT = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
+import {
+  isDefaultishWatchlist,
+  isLegacyMegaCapWatchlist,
+  isV1DefaultWatchlist,
+  V1_DEFAULT_WATCHLIST,
+} from "@/lib/universe/v1-default-watchlist";
+import { getTradingDataDir } from "@/lib/paths/data-root";
 
 export function isMegaCapDefaultWatchlist(list: string[]): boolean {
-  if (list.length === 0) return true;
-  if (list.length > 5) return false;
-  const set = new Set(list.map((s) => s.toUpperCase()));
-  return MEGA_CAP_DEFAULT.every((s) => set.has(s)) && set.size <= 5;
+  return isLegacyMegaCapWatchlist(list);
 }
 
 export type WatchlistSourceInfo = {
-  source: "runtime" | "paper_soak" | "env_default";
+  source: "runtime" | "paper_soak" | "env_default" | "v1_default";
   effective: string[];
   paperSoakActive: boolean;
   note: string;
@@ -39,22 +41,31 @@ export function describeWatchlistSource(
 ): WatchlistSourceInfo {
   const paperSoakActive = settings.paperSoakProfile;
   if (paperSoakActive) {
-    const effective = isMegaCapDefaultWatchlist(settings.watchlist)
+    const effective = isDefaultishWatchlist(settings.watchlist)
       ? [...DEFAULT_PAPER_SOAK_WATCHLIST]
       : settings.watchlist;
     return {
       source: "paper_soak",
       effective,
       paperSoakActive: true,
-      note: "Paper soak profile is ON — mid-price soak watchlist overrides the mega-cap env default. Edits persist as runtime values.",
+      note: "Paper soak profile is ON — soak watchlist overrides Version 1 / mega-cap defaults. Edits persist as runtime values.",
     };
   }
-  if (isMegaCapDefaultWatchlist(settings.watchlist)) {
+  if (
+    settings.watchlist.length === 0 ||
+    isLegacyMegaCapWatchlist(settings.watchlist) ||
+    isV1DefaultWatchlist(settings.watchlist)
+  ) {
+    const effective =
+      settings.watchlist.length === 0 ||
+      isLegacyMegaCapWatchlist(settings.watchlist)
+        ? [...V1_DEFAULT_WATCHLIST]
+        : settings.watchlist;
     return {
-      source: "env_default",
-      effective: settings.watchlist,
+      source: "v1_default",
+      effective,
       paperSoakActive: false,
-      note: "Using environment / mega-cap default watchlist. Enable Paper Soak Profile or edit the list for mid-price symbols.",
+      note: "Using Version 1 default watchlist (liquid mid-price U.S. stocks). Edit the list or enable Paper Soak Profile to change.",
     };
   }
   return {
@@ -65,9 +76,14 @@ export function describeWatchlistSource(
   };
 }
 
-const DIR = path.join(process.cwd(), "data");
-const FILE = path.join(DIR, "auto-trade-settings.json");
-const AUDIT = path.join(DIR, "auto-trade-settings-audit.jsonl");
+function settingsPaths() {
+  const DIR = getTradingDataDir();
+  return {
+    DIR,
+    FILE: path.join(DIR, "auto-trade-settings.json"),
+    AUDIT: path.join(DIR, "auto-trade-settings-audit.jsonl"),
+  };
+}
 
 let cache: AutoTradeRuntimeSettings | null = null;
 let writeChain: Promise<unknown> = Promise.resolve();
@@ -77,7 +93,7 @@ function newId(): string {
 }
 
 async function ensureDir() {
-  await mkdir(DIR, { recursive: true });
+  await mkdir(settingsPaths().DIR, { recursive: true });
 }
 
 function serializeValue(
@@ -95,12 +111,16 @@ async function appendAudit(entries: SettingsAuditEntry[]): Promise<void> {
   if (entries.length === 0) return;
   await ensureDir();
   const lines = entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
-  await writeFile(AUDIT, lines, { flag: "a" });
+  await writeFile(settingsPaths().AUDIT, lines, { flag: "a" });
 }
 
 async function persist(settings: AutoTradeRuntimeSettings): Promise<void> {
   await ensureDir();
-  await writeFile(FILE, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  await writeFile(
+    settingsPaths().FILE,
+    `${JSON.stringify(settings, null, 2)}\n`,
+    "utf8",
+  );
   cache = settings;
 }
 
@@ -134,7 +154,7 @@ export function getEffectiveRuntimeSettings(): AutoTradeRuntimeSettings {
 export async function loadRuntimeSettings(): Promise<AutoTradeRuntimeSettings> {
   if (cache) return cache;
   try {
-    const raw = await readFile(FILE, "utf8");
+    const raw = await readFile(settingsPaths().FILE, "utf8");
     const parsed = JSON.parse(raw) as Partial<AutoTradeRuntimeSettings>;
     cache = mergeLoaded(parsed);
     return cache;
@@ -172,20 +192,34 @@ export async function patchRuntimeSettings(input: {
 
     const normalized = { ...validated.normalized };
 
-    // Enabling soak profile: replace mega-cap default with soak candidates unless user sent a custom list.
+    // Enabling soak profile: replace defaultish lists with soak candidates unless user sent a custom list.
     if (
       normalized.paperSoakProfile === true &&
       normalized.watchlist == null &&
-      isMegaCapDefaultWatchlist(current.watchlist)
+      isDefaultishWatchlist(current.watchlist)
     ) {
       normalized.watchlist = [...DEFAULT_PAPER_SOAK_WATCHLIST];
     }
     if (
       normalized.paperSoakProfile === true &&
       normalized.watchlist != null &&
-      isMegaCapDefaultWatchlist(normalized.watchlist)
+      isDefaultishWatchlist(normalized.watchlist)
     ) {
       normalized.watchlist = [...DEFAULT_PAPER_SOAK_WATCHLIST];
+    }
+    // Disabling soak: restore Version 1 default when the list was the soak default.
+    if (
+      normalized.paperSoakProfile === false &&
+      current.paperSoakProfile === true &&
+      normalized.watchlist == null
+    ) {
+      const soakSet = new Set(DEFAULT_PAPER_SOAK_WATCHLIST);
+      const looksLikeSoak =
+        current.watchlist.length >= 20 &&
+        current.watchlist.every((s) => soakSet.has(s.toUpperCase()));
+      if (looksLikeSoak || isDefaultishWatchlist(current.watchlist)) {
+        normalized.watchlist = [...V1_DEFAULT_WATCHLIST];
+      }
     }
 
     const next: AutoTradeRuntimeSettings = {
@@ -298,7 +332,7 @@ export async function readSettingsAudit(
   limit = 50,
 ): Promise<SettingsAuditEntry[]> {
   try {
-    const raw = await readFile(AUDIT, "utf8");
+    const raw = await readFile(settingsPaths().AUDIT, "utf8");
     const rows: SettingsAuditEntry[] = [];
     for (const line of raw.split("\n")) {
       const t = line.trim();

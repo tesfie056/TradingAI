@@ -28,7 +28,24 @@ export function BacktestView() {
         setSymbols(settings.watchlist);
         if (settings.watchlist[0]) setSymbol(settings.watchlist[0]);
       } catch {
-        setSymbols(["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"]);
+        setSymbols([
+          "F",
+          "T",
+          "VZ",
+          "PFE",
+          "WBD",
+          "NOK",
+          "AAL",
+          "CMCSA",
+          "HPE",
+          "RIG",
+          "HBAN",
+          "CCL",
+          "ITUB",
+          "VALE",
+          "ERIC",
+          "HPQ",
+        ]);
       }
     })();
   }, []);

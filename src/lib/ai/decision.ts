@@ -1,5 +1,4 @@
 import type {
-  AiAction,
   AiDecision,
   AlpacaBar,
   AlpacaQuote,
@@ -13,46 +12,24 @@ import {
   assessMarketCondition,
   type MarketCondition,
 } from "@/lib/stocks/market-condition";
-import {
-  assessStockRisk,
-  buildDecisionScores,
-  buildExplanation,
-  chooseAction,
-  chooseDecisionLabel,
-  isReadyForManualPaperTrade,
-  liquidityToScore,
-  momentumToScore,
-  newsToScore,
-  volumeToScore,
-} from "@/lib/stocks/scoring";
-import { isSmallAccountMode } from "@/lib/config";
-import { scoreSmallAccountFit } from "@/lib/stocks/small-account";
-import {
-  analyzeStockTechnicals,
-  technicalLeanToScore,
-} from "@/lib/stocks/technicals";
+import { getRiskTradingConfig } from "@/lib/config/risk-config";
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
+import {
+  evaluateV1SimpleLong,
+  minutesSinceRegularOpen,
+  minutesUntilRegularClose,
+  v1ResultToAiDecision,
+  type V1StrategyContext,
+} from "@/lib/strategy/v1-simple-long";
 
-function clamp(n: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, n));
-}
-
-function toNewsContext(news?: SymbolNewsAnalysis): AiDecision["newsContext"] {
-  if (!news) {
-    return {
-      overallSentiment: null,
-      highestImportance: null,
-      sentimentScore: 0,
-      explanation: "No news context attached.",
-      headlines: [],
-    };
-  }
+function defaultMarket(): MarketCondition {
   return {
-    overallSentiment: news.overallSentiment,
-    highestImportance: news.highestImportance,
-    sentimentScore: news.sentimentScore,
-    explanation: news.explanation,
-    headlines: news.items.map((i) => i.headline).slice(0, 3),
+    label: "unclear",
+    marketScore: 0.5,
+    spyTrendPct: null,
+    qqqTrendPct: null,
+    explanation: "Market benchmarks (SPY/QQQ) not available.",
+    paperOnly: true,
   };
 }
 
@@ -99,208 +76,108 @@ function buildSnapshot(
   };
 }
 
-function defaultMarket(): MarketCondition {
+function defaultV1Context(
+  isMarketOpen: boolean,
+  overrides?: Partial<V1StrategyContext>,
+  nowMs?: number,
+): V1StrategyContext {
+  const cfg = getRiskTradingConfig();
+  const now = nowMs ?? Date.now();
   return {
-    label: "unclear",
-    marketScore: 0.5,
-    spyTrendPct: null,
-    qqqTrendPct: null,
-    explanation: "Market benchmarks (SPY/QQQ) not available.",
-    paperOnly: true,
+    isMarketOpen,
+    minutesSinceOpen: isMarketOpen ? minutesSinceRegularOpen(now) : null,
+    minutesToClose: isMarketOpen ? minutesUntilRegularClose(now) : null,
+    hasOpenPosition: false,
+    hasPendingEntry: false,
+    hasPendingExit: false,
+    reconciliationComplete: true,
+    universeEligible: true,
+    openEntryDelayMinutes: cfg.openEntryDelayMinutes,
+    eodEntryCutoffMinutes: cfg.eodEntryCutoffMinutes,
+    minPrice: cfg.minPrice,
+    maxPrice: cfg.maxPrice,
+    maxSpreadPercent: cfg.maxSpreadPercent,
+    stopLossPct: cfg.defaultStopLossPct,
+    takeProfitPct: cfg.defaultTakeProfitPct,
+    nowMs: now,
+    ...overrides,
   };
 }
 
 /**
- * Phase 6.5 stock decision for one U.S. equity symbol.
- * Never places orders. Safety HOLDs still win.
+ * Version 1 long-only decision for one U.S. equity symbol.
+ * Uses deterministic v1-simple-long strategy. Never places orders.
  */
 export function decideForSymbol(
   snapshot: SymbolMarketSnapshot,
   news?: SymbolNewsAnalysis,
   marketCondition?: MarketCondition,
+  v1Context?: Partial<V1StrategyContext>,
 ): AiDecision {
-  const timestamp = new Date().toISOString();
   const market = marketCondition ?? defaultMarket();
   const dq = snapshot.dataQuality;
+  const isOpen = dq.isMarketOpen;
+  const context = defaultV1Context(isOpen, v1Context);
 
-  const technical = analyzeStockTechnicals({
-    bars1Min: snapshot.bars1Min,
+  const v1 = evaluateV1SimpleLong({
+    symbol: snapshot.symbol,
+    quote: {
+      symbol: snapshot.symbol,
+      bid: snapshot.bid,
+      ask: snapshot.ask,
+      bidSize: null,
+      askSize: null,
+      timestamp: snapshot.quoteTimestamp,
+    },
     bars5Min: snapshot.bars5Min ?? snapshot.bars,
-    bars15Min: snapshot.bars15Min,
-    lastPrice: snapshot.last,
-  });
-
-  const risk = assessStockRisk({
+    bars15Min: snapshot.bars15Min ?? [],
+    bars1Min: snapshot.bars1Min,
     dataQuality: dq,
-    technical,
-    market,
-    news,
+    context,
   });
 
-  const technicalScore = technicalLeanToScore(technical.technicalLean);
-  const newsScore = newsToScore(news);
-  const volumeScore = volumeToScore(technical.volumeRatio);
-  const momentumScore = momentumToScore(technical.technicalLean);
-  const liquidityScore = liquidityToScore(
-    snapshot.spreadPct,
-    technical.volumeRatio,
-  );
-  const scores = buildDecisionScores({
-    technicalScore,
-    newsScore,
-    marketScore: market.marketScore,
-    riskScore: risk.riskScore,
-    volumeScore,
-    momentumScore,
-    liquidityScore,
-  });
-
-  let adjustedFinalScore = scores.finalScore;
-  let smallAccountNote = "";
-  const smallAccountBlock: string[] = [];
-  if (isSmallAccountMode()) {
-    const fit = scoreSmallAccountFit({
-      lastPrice: snapshot.last,
-      spreadPercent: snapshot.spreadPct,
-      volumeRatio: technical.volumeRatio,
-      trendPct:
-        technical.trends.find((t) => t.timeframe === "5Min")?.trendPct ?? null,
-    });
-    adjustedFinalScore = clamp(
-      adjustedFinalScore + fit.bonus,
-      0.05,
-      0.95,
-    );
-    if (fit.reasons.length > 0) {
-      smallAccountNote = ` Small-account fit: ${fit.reasons.join("; ")}.`;
-    }
-    if (!fit.eligible) {
-      smallAccountBlock.push("Outside small-account price/quality filters.");
-    }
-  }
-
-  const scoresForAction = {
-    ...scores,
-    finalScore: adjustedFinalScore,
-  };
-
-  const { action, blockReasons } = chooseAction({
-    technicalLean: technical.technicalLean,
-    scores: scoresForAction,
-    risk,
-    market,
-    dataQuality: dq,
-  });
-
-  const mergedBlockReasons = [...smallAccountBlock, ...blockReasons];
-
-  const decisionLabel = chooseDecisionLabel({
-    action,
-    blockReasons: mergedBlockReasons,
-    technicalLean: technical.technicalLean,
-    finalScore: scoresForAction.finalScore,
-    smallAccountBlocked: smallAccountBlock.length > 0,
-  });
-
-  // Align confidence with action clarity
-  let confidence = scores.confidence;
-  if (action === "HOLD") {
-    confidence = clamp(0.4 + (1 - Math.abs(scores.finalScore - 0.5)) * 0.15, 0.3, 0.75);
-  } else {
-    confidence = clamp(0.5 + Math.abs(scores.finalScore - 0.5) * 0.9, 0.45, 0.9);
-  }
-  if (risk.level === "medium") confidence *= 0.92;
-  if (risk.level === "high") confidence *= 0.75;
-  confidence = clamp(Number(confidence.toFixed(2)), 0.1, 0.92);
-
-  const explanation = buildExplanation({
-    action,
-    technical,
-    news,
-    market,
-    risk,
-  });
-
-  const reasons: string[] = [
-    explanation.summary,
-    `Technical: ${explanation.technical}`,
-    `Market: ${explanation.market}`,
-    `News: ${explanation.news}`,
-    `Risk: ${explanation.risk}`,
-  ];
-  if (mergedBlockReasons.length > 0 && action === "HOLD") {
-    reasons.push(`Blocked: ${mergedBlockReasons.join(" ")}`);
-  }
-  if (smallAccountNote) {
-    reasons.push(smallAccountNote.trim());
-  }
-
-  const trendPct =
-    technical.trends.find((t) => t.timeframe === "5Min")?.trendPct ??
-    technical.trends.find((t) => t.trendPct != null)?.trendPct ??
-    null;
-
-  const ready =
-    isReadyForManualPaperTrade({
-      action,
-      riskStatus: risk.riskStatus,
-      dataQuality: dq,
-    }) && smallAccountBlock.length === 0;
-
-  const marketPayload: NonNullable<AiDecision["marketCondition"]> = {
+  const decision = v1ResultToAiDecision(v1, dq);
+  decision.newsContext = toNewsContext(news);
+  decision.marketCondition = {
     label: market.label as MarketConditionLabel,
     marketScore: market.marketScore,
     spyTrendPct: market.spyTrendPct,
     qqqTrendPct: market.qqqTrendPct,
     explanation: market.explanation,
   };
+  // News never drives Version 1 entries — keep informational only.
+  if (news) {
+    decision.reasons = [
+      ...decision.reasons,
+      "News is informational only and does not approve entries.",
+    ];
+  }
+  return decision;
+}
 
+function toNewsContext(news?: SymbolNewsAnalysis): AiDecision["newsContext"] {
+  if (!news) {
+    return {
+      overallSentiment: null,
+      highestImportance: null,
+      sentimentScore: 0,
+      explanation: "No news context attached.",
+      headlines: [],
+    };
+  }
   return {
-    symbol: snapshot.symbol,
-    action: action as AiAction,
-    decisionLabel,
-    confidence,
-    reasons,
-    riskWarnings: [...dq.warningMessages, ...risk.reasons],
-    riskStatus: risk.riskStatus,
-    riskLevel: risk.level,
-    timestamp,
-    paperOnly: true,
-    assetClass: "us_equity",
-    dataQuality: dq,
-    newsContext: toNewsContext(news),
-    scores: {
-      ...scoresForAction,
-      confidence,
-    },
-    explanation,
-    marketCondition: marketPayload,
-    readyForManualPaperTrade: ready,
-    tradeBlockReasons:
-      ready
-        ? []
-        : mergedBlockReasons.length > 0
-          ? mergedBlockReasons
-          : risk.reasons,
-    metrics: {
-      last: snapshot.last,
-      mid: snapshot.mid,
-      spreadPct: snapshot.spreadPct,
-      trendPct,
-      rangePct: technical.rangePct,
-      volumeRatio: technical.volumeRatio,
-      vwap: technical.vwap,
-      support: technical.support,
-      resistance: technical.resistance,
-      gapPct: technical.gapPct,
-      gapLabel: technical.gapLabel,
-    },
+    overallSentiment: news.overallSentiment,
+    highestImportance: news.highestImportance,
+    sentimentScore: news.sentimentScore,
+    explanation: news.explanation,
+    headlines: news.items.map((i) => i.headline).slice(0, 3),
   };
 }
 
 /**
- * Generate structured stock decisions for every watchlist symbol.
+ * Generate Version 1 structured decisions for every watchlist symbol.
  * U.S. equities only — non-stock symbols are filtered out.
+ * Never places orders.
  */
 export function generateWatchlistDecisions(input: {
   symbols: string[];
@@ -319,11 +196,16 @@ export function generateWatchlistDecisions(input: {
   qqqBars5Min?: AlpacaBar[];
   spyBars15Min?: AlpacaBar[];
   qqqBars15Min?: AlpacaBar[];
+  /** Symbols that passed universe filters (others marked ineligible). */
+  universeEligibleSymbols?: string[];
+  openPositionSymbols?: string[];
+  pendingEntrySymbols?: string[];
+  pendingExitSymbols?: string[];
+  reconciliationComplete?: boolean;
 }): AiDecision[] {
   const symbols = filterUsStockSymbols(input.symbols);
   const quoteMap = new Map(input.quotes.map((q) => [q.symbol, q]));
-  const bars5 =
-    input.bars5MinBySymbol ?? input.barsBySymbol;
+  const bars5 = input.bars5MinBySymbol ?? input.barsBySymbol;
 
   const market =
     input.marketCondition ??
@@ -333,6 +215,19 @@ export function generateWatchlistDecisions(input: {
       spyBars15Min: input.spyBars15Min,
       qqqBars15Min: input.qqqBars15Min,
     });
+
+  const eligibleSet = new Set(
+    (input.universeEligibleSymbols ?? symbols).map((s) => s.toUpperCase()),
+  );
+  const openSet = new Set(
+    (input.openPositionSymbols ?? []).map((s) => s.toUpperCase()),
+  );
+  const pendingEntry = new Set(
+    (input.pendingEntrySymbols ?? []).map((s) => s.toUpperCase()),
+  );
+  const pendingExit = new Set(
+    (input.pendingExitSymbols ?? []).map((s) => s.toUpperCase()),
+  );
 
   return symbols.map((symbol) => {
     const snapshot = buildSnapshot(
@@ -346,7 +241,14 @@ export function generateWatchlistDecisions(input: {
         nowMs: input.nowMs,
       },
     );
-    return decideForSymbol(snapshot, input.newsBySymbol?.[symbol], market);
+    return decideForSymbol(snapshot, input.newsBySymbol?.[symbol], market, {
+      universeEligible: eligibleSet.has(symbol.toUpperCase()),
+      hasOpenPosition: openSet.has(symbol.toUpperCase()),
+      hasPendingEntry: pendingEntry.has(symbol.toUpperCase()),
+      hasPendingExit: pendingExit.has(symbol.toUpperCase()),
+      reconciliationComplete: input.reconciliationComplete ?? true,
+      nowMs: input.nowMs,
+    });
   });
 }
 

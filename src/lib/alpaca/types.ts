@@ -192,6 +192,34 @@ export type AiDecision = {
     gapPct?: number | null;
     gapLabel?: string | null;
   };
+  /** Version 1 simple-long strategy snapshot (planning only — no order submit). */
+  v1Strategy?: {
+    strategyId: string;
+    strategyVersion: string;
+    decision: DecisionLabel;
+    score: number;
+    buyThreshold: number;
+    watchThreshold: number;
+    confidence: number;
+    suggestedEntry: number | null;
+    suggestedStopLoss: number | null;
+    suggestedTakeProfit: number | null;
+    rewardToRisk: number | null;
+    mandatoryPassed: number;
+    mandatoryFailed: string[];
+    conditionsPassed: number;
+    conditionsFailed: number;
+    conditionDetails: {
+      id: string;
+      name: string;
+      passed: boolean;
+      mandatory: boolean;
+      explanation: string;
+    }[];
+    primaryReason: string;
+    evaluatedAt: string;
+    planningOnly: true;
+  };
 };
 
 /** Local decision history entry (no secrets). */

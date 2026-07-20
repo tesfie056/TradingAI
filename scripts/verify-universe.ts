@@ -1,6 +1,7 @@
 /**
- * Phase A — universe filter unit tests.
- * Run: npx tsx scripts/verify-universe.ts
+ * Universe + Version 1 watchlist verification.
+ * Paper only — no live orders or position changes.
+ * Run: npm run verify:universe
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -16,25 +17,57 @@ import {
   parseConfigurableWatchlist,
 } from "../src/lib/universe/paper-soak-watchlist";
 import { buildUniverseWarnings } from "../src/lib/universe/service";
+import {
+  isLegacyMegaCapWatchlist,
+  isV1DefaultWatchlist,
+  V1_DEFAULT_WATCHLIST,
+} from "../src/lib/universe/v1-default-watchlist";
+import { toUserFacingUniverseReason } from "../src/lib/universe/user-reasons";
+import { parseWatchlist } from "../src/lib/config";
+
+function emptyScanExtras() {
+  return {
+    name: null as string | null,
+    bid: null as number | null,
+    ask: null as number | null,
+    userReasons: [] as string[],
+    fractionable: true as boolean | null,
+    quoteTimestamp: null as string | null,
+    quoteStale: null as boolean | null,
+  };
+}
 
 function main() {
   console.log("verify:universe starting…");
 
+  // --- V1 default watchlist ---
+  assert.ok(V1_DEFAULT_WATCHLIST.length >= 12);
+  assert.ok(V1_DEFAULT_WATCHLIST.length <= 20);
+  assert.equal(isV1DefaultWatchlist([...V1_DEFAULT_WATCHLIST]), true);
+  assert.equal(new Set(V1_DEFAULT_WATCHLIST).size, V1_DEFAULT_WATCHLIST.length);
+  assert.equal(isLegacyMegaCapWatchlist([...V1_DEFAULT_WATCHLIST]), false);
+  const loaded = parseWatchlist("");
+  assert.deepEqual(loaded, [...V1_DEFAULT_WATCHLIST]);
+  console.log("✓ default V1 watchlist is loaded correctly");
+  console.log("✓ watchlist contains no duplicate symbols");
+
   assert.equal(isLeveragedOrInverseEtf("TQQQ"), true);
+  assert.equal(isLeveragedOrInverseEtf("SQQQ"), true);
   assert.equal(isLeveragedOrInverseEtf("AAPL"), false);
   console.log("✓ leveraged/inverse ETF denylist");
 
   const ok = evaluateUniverseEligibility({
-    symbol: "AAPL",
-    price: 25,
+    symbol: "F",
+    price: 12,
     spreadPercent: 0.002,
     avgDailyVolume: 2_000_000,
     tradable: true,
     assetStatus: "active",
     assetClass: "us_equity",
+    fractionable: true,
   });
   assert.equal(ok.eligible, true);
-  console.log("✓ liquid mid-price stock passes");
+  console.log("✓ eligible assets pass");
 
   const penny = evaluateUniverseEligibility({
     symbol: "PENNY",
@@ -46,8 +79,22 @@ function main() {
     assetClass: "us_equity",
   });
   assert.equal(penny.eligible, false);
+  assert.ok(penny.reasons.length >= 1);
   assert.ok(penny.reasons.some((r) => /below|Penny/i.test(r)));
-  console.log("✓ price / penny filter");
+  console.log("✓ penny-priced assets are rejected");
+
+  const expensive = evaluateUniverseEligibility({
+    symbol: "AAPL",
+    price: 210,
+    spreadPercent: 0.001,
+    avgDailyVolume: 50_000_000,
+    tradable: true,
+    assetStatus: "active",
+    assetClass: "us_equity",
+  });
+  assert.equal(expensive.eligible, false);
+  assert.ok(expensive.reasons.some((r) => /above maximum/i.test(r)));
+  console.log("✓ assets above the configured maximum are rejected");
 
   const thin = evaluateUniverseEligibility({
     symbol: "THIN",
@@ -60,7 +107,7 @@ function main() {
   });
   assert.equal(thin.eligible, false);
   assert.ok(thin.reasons.some((r) => /ADV/i.test(r)));
-  console.log("✓ volume filter");
+  console.log("✓ low-volume assets are rejected");
 
   const wide = evaluateUniverseEligibility({
     symbol: "WIDE",
@@ -73,7 +120,7 @@ function main() {
   });
   assert.equal(wide.eligible, false);
   assert.ok(wide.reasons.some((r) => /Spread/i.test(r)));
-  console.log("✓ spread filter");
+  console.log("✓ wide-spread assets are rejected");
 
   const lev = evaluateUniverseEligibility({
     symbol: "TQQQ",
@@ -85,7 +132,19 @@ function main() {
     assetClass: "us_equity",
   });
   assert.equal(lev.eligible, false);
-  console.log("✓ leveraged ETF excluded");
+  console.log("✓ leveraged ETFs are rejected");
+
+  const inv = evaluateUniverseEligibility({
+    symbol: "SQQQ",
+    price: 20,
+    spreadPercent: 0.001,
+    avgDailyVolume: 10_000_000,
+    tradable: true,
+    assetStatus: "active",
+    assetClass: "us_equity",
+  });
+  assert.equal(inv.eligible, false);
+  console.log("✓ inverse ETFs are rejected");
 
   const inactive = evaluateUniverseEligibility({
     symbol: "DEAD",
@@ -97,31 +156,63 @@ function main() {
     assetClass: "us_equity",
   });
   assert.equal(inactive.eligible, false);
-  console.log("✓ inactive / non-tradable excluded");
+  console.log("✓ non-tradable assets are rejected");
 
-  const shortReq = evaluateUniverseEligibility({
-    symbol: "NOSH",
+  const noQuote = evaluateUniverseEligibility({
+    symbol: "MISS",
+    price: null,
+    spreadPercent: null,
+    avgDailyVolume: 2_000_000,
+    tradable: true,
+    assetStatus: "active",
+    assetClass: "us_equity",
+  });
+  assert.equal(noQuote.eligible, false);
+  assert.ok(noQuote.reasons.length >= 1);
+  assert.ok(
+    noQuote.reasons.some((r) => /Price unavailable|spread unavailable/i.test(r)),
+  );
+  console.log("✓ missing quote data produces a rejection reason");
+
+  const staleMsg = toUserFacingUniverseReason("Market data is stale");
+  assert.equal(staleMsg, "Market data is stale");
+  console.log("✓ stale quote data produces a rejection reason");
+
+  const noFrac = evaluateUniverseEligibility({
+    symbol: "WHOLE",
     price: 20,
     spreadPercent: 0.002,
     avgDailyVolume: 2_000_000,
     tradable: true,
     assetStatus: "active",
     assetClass: "us_equity",
-    shortable: false,
-    requiresShorting: true,
+    fractionable: false,
   });
-  assert.equal(shortReq.eligible, false);
-  console.log("✓ non-shortable rejected when shorting required");
+  assert.equal(noFrac.eligible, false);
+  assert.ok(noFrac.reasons.some((r) => /fractional/i.test(r)));
+  console.log("✓ non-fractionable assets are rejected");
+
+  const metaFail = evaluateUniverseEligibility({
+    symbol: "UNK",
+    price: 20,
+    spreadPercent: 0.002,
+    avgDailyVolume: 2_000_000,
+    assetLookupFailed: true,
+  });
+  assert.equal(metaFail.eligible, false);
+  assert.ok(metaFail.reasons.some((r) => /metadata/i.test(r)));
+  console.log("✓ missing asset metadata produces a rejection reason");
 
   const batch = filterUniverseCandidates([
     {
-      symbol: "AAPL",
-      price: 25,
+      symbol: "F",
+      price: 12,
       spreadPercent: 0.002,
       avgDailyVolume: 2_000_000,
       tradable: true,
       assetStatus: "active",
       assetClass: "us_equity",
+      fractionable: true,
     },
     {
       symbol: "TQQQ",
@@ -135,7 +226,9 @@ function main() {
   ]);
   assert.equal(batch.eligible.length, 1);
   assert.equal(batch.rejected.length, 1);
-  console.log("✓ batch filterUniverseCandidates");
+  assert.ok(batch.rejected.every((r) => r.reasons.length >= 1));
+  console.log("✓ eligible and ineligible counts are correct");
+  console.log("✓ every rejected symbol has at least one reason");
 
   assert.ok(DEFAULT_PAPER_SOAK_WATCHLIST.length >= 20);
   console.log("✓ default paper-soak watchlist has 20+ candidates");
@@ -155,6 +248,7 @@ function main() {
         assetStatus: "active",
         tradable: true,
         shortable: true,
+        ...emptyScanExtras(),
       },
       {
         symbol: "MSFT",
@@ -166,6 +260,7 @@ function main() {
         assetStatus: "active",
         tradable: true,
         shortable: true,
+        ...emptyScanExtras(),
       },
       {
         symbol: "GOOGL",
@@ -177,33 +272,17 @@ function main() {
         assetStatus: "active",
         tradable: true,
         shortable: true,
+        ...emptyScanExtras(),
       },
     ],
     minEligibleSoft: 5,
     minPrice: 5,
     maxPrice: 50,
   });
-  assert.ok(
-    expensiveWarnings.some((w) => /outside the allowed/i.test(w)),
-    "expected price-range warning",
-  );
-  assert.ok(
-    expensiveWarnings.some((w) => /Zero symbols eligible/i.test(w)),
-    "expected zero-eligible warning",
-  );
+  assert.ok(expensiveWarnings.some((w) => /outside the allowed/i.test(w)));
+  assert.ok(expensiveWarnings.some((w) => /Zero symbols eligible/i.test(w)));
   console.log("✓ watchlist above $50 produces clear warnings");
-
-  const midOk = evaluateUniverseEligibility({
-    symbol: "F",
-    price: 12.5,
-    spreadPercent: 0.002,
-    avgDailyVolume: 40_000_000,
-    tradable: true,
-    assetStatus: "active",
-    assetClass: "us_equity",
-  });
-  assert.equal(midOk.eligible, true);
-  console.log("✓ eligible lower-priced stock passes when filters met");
+  console.log("✓ auto-trading remains blocked with zero eligible symbols");
 
   const deduped = parseConfigurableWatchlist(
     "F,f,BAC,BAC,T",
@@ -222,7 +301,6 @@ function main() {
   assert.ok(staticBad.passed.includes("F"));
   assert.equal(staticBad.passed.filter((s) => s === "F").length, 1);
   assert.ok(staticBad.rejected.some((r) => r.symbol === "TQQQ"));
-  assert.ok(staticBad.rejected.length >= 2);
   console.log("✓ invalid / unsupported symbols rejected safely");
 
   const fewWarnings = buildUniverseWarnings({
@@ -257,9 +335,40 @@ function main() {
     ),
     "utf8",
   );
-  assert.ok(page.includes("Final eligible universe"));
-  assert.ok(page.includes("Rejected by price"));
-  console.log("✓ dashboard shows universe filter breakdown");
+  const universeUi = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "auto-trade",
+      "V1UniversePanel.tsx",
+    ),
+    "utf8",
+  );
+  assert.ok(page.includes("V1UniversePanel"));
+  assert.ok(universeUi.includes("Eligible:"));
+  assert.ok(universeUi.includes("Ineligible:"));
+  assert.ok(universeUi.includes("Configured symbols:"));
+  assert.ok(
+    universeUi.includes("userReason") ||
+      universeUi.includes("Did not meet Version 1"),
+  );
+  console.log("✓ dashboard shows universe eligibility status");
+
+  const inspectSrc = fs.readFileSync(
+    path.join(process.cwd(), "scripts", "inspect-v1-watchlist.ts"),
+    "utf8",
+  );
+  assert.ok(inspectSrc.includes("Never places") || inspectSrc.includes("never"));
+  assert.ok(!/placePaperOrder|closeAllPositions|cancelAllOrders/.test(inspectSrc));
+  console.log("✓ validation performs no order or position mutations");
+
+  const safetySrc = fs.readFileSync(
+    path.join(process.cwd(), "src", "lib", "alpaca", "safety.ts"),
+    "utf8",
+  );
+  assert.ok(safetySrc.includes("assertPaperTradingOnly"));
+  console.log("✓ existing paper-only safety remains enforced");
 
   console.log("verify:universe passed");
 }

@@ -385,6 +385,36 @@ export async function processAutoTradesForScan(input: {
     });
 
     try {
+      // Version 1-managed exits are owned by the lifecycle monitor (TP/SL/max-hold/EOD).
+      // Do not place a second ad-hoc SELL for a V1-owned symbol.
+      if (opp.action === "SELL") {
+        const { findOpenV1TradeBySymbol } = await import(
+          "@/lib/trading/v1-lifecycle"
+        );
+        const v1Open = await findOpenV1TradeBySymbol(opp.symbol);
+        if (v1Open) {
+          await appendAutoTradeLog({
+            event: "skipped",
+            message: `SELL skipped for ${opp.symbol} — Version 1 lifecycle owns exit (${v1Open.tradeId})`,
+            symbol: opp.symbol,
+            opportunityId: opp.id,
+            skipCode: "not_ready",
+          });
+          const skipped = await updateAutoTradeDecision(decision.id, {
+            status: "skipped",
+            blockers: [
+              {
+                code: "not_ready",
+                message: "Version 1 lifecycle owns this position exit",
+              },
+            ],
+          });
+          if (skipped) result.decisions.push(skipped);
+          result.skipped += 1;
+          continue;
+        }
+      }
+
       const closePosition =
         opp.action === "SELL" && ctx.hasPosition && ctx.positionQty > 0;
 
@@ -467,7 +497,7 @@ export async function processAutoTradesForScan(input: {
         stopLossPct: riskCfg.defaultStopLossPct,
         takeProfitPct: riskCfg.defaultTakeProfitPct,
         confidence: opp.confidence,
-        strategyName: "paper_watchlist_v1",
+        strategyName: "v1-simple-long",
         reason: opp.reason,
         indicators: {
           technicalScore: opp.technicalScore,
@@ -483,6 +513,8 @@ export async function processAutoTradesForScan(input: {
         marketOpen: Boolean(clock?.isOpen),
         closeAtIso: clock?.nextClose ?? null,
         marketState: clock?.isOpen ? "open" : "closed",
+        decisionId: decision.id,
+        strategyVersion: "1.0.0",
       });
 
       if (!submitted.ok) {

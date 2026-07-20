@@ -85,6 +85,7 @@ export async function getAutoTradeStatus(): Promise<AutoTradeStatus> {
   let openPositions: AutoTradeStatus["trader"]["openPositions"] = [];
   let pendingOrders: AutoTradeStatus["trader"]["pendingOrders"] = [];
   let marketOpen: boolean | null = null;
+  let alpacaConnected = false;
 
   try {
     const [account, positions, orders] = await Promise.all([
@@ -92,6 +93,7 @@ export async function getAutoTradeStatus(): Promise<AutoTradeStatus> {
       getPositions(),
       getOpenOrders(30),
     ]);
+    alpacaConnected = true;
     buyingPower = Number(account.buying_power);
     equity = Number(account.equity);
     if (!Number.isFinite(buyingPower)) buyingPower = null;
@@ -271,6 +273,7 @@ export async function getAutoTradeStatus(): Promise<AutoTradeStatus> {
     blockSummary: buildAutoTradeBlockSummary(base),
     trader: {
       mode: "paper",
+      alpacaConnected,
       marketOpen,
       symbolsScanned:
         candidates?.symbolsScanned ?? lastScan?.stocksScanned ?? 0,
@@ -302,8 +305,29 @@ export async function getAutoTradeStatus(): Promise<AutoTradeStatus> {
             rejectedByLiquidity: universeSnap.rejectedByLiquidity,
             rejectedBySpread: universeSnap.rejectedBySpread,
             eligibleCount: universeSnap.eligibleCount,
+            ineligibleCount:
+              universeSnap.ineligibleCount ??
+              Math.max(
+                0,
+                universeSnap.watchlistSize - universeSnap.eligibleCount,
+              ),
             eligibleSymbols: universeSnap.eligibleSymbols,
+            ineligibleSymbols: universeSnap.ineligibleSymbols ?? [],
+            configuredSymbols: universeSnap.configuredSymbols ?? [],
+            symbols: universeSnap.symbols ?? [],
             warnings: universeSnap.warnings,
+            evaluatedAt: universeSnap.evaluatedAt ?? universeSnap.updatedAt,
+            dataFreshness: universeSnap.dataFreshness ?? null,
+            marketOpen: universeSnap.marketOpen ?? null,
+            filterConfig: universeSnap.filterConfig
+              ? {
+                  minPrice: universeSnap.filterConfig.minPrice,
+                  maxPrice: universeSnap.filterConfig.maxPrice,
+                  minAvgDailyVolume:
+                    universeSnap.filterConfig.minAvgDailyVolume,
+                  maxSpreadPercent: universeSnap.filterConfig.maxSpreadPercent,
+                }
+              : null,
           }
         : null,
     },

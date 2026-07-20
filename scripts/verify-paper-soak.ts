@@ -166,8 +166,22 @@ function main() {
     ),
     "utf8",
   );
-  assert.ok(page.includes("Paper Test Results"));
-  assert.ok(page.includes("Rejected proposals"));
+  const advanced = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "auto-trade",
+      "AdvancedAutoTradeDetails.tsx",
+    ),
+    "utf8",
+  );
+  assert.ok(
+    page.includes("Paper Test Results") || advanced.includes("Paper Test Results"),
+  );
+  assert.ok(
+    page.includes("Rejected proposals") || advanced.includes("Rejected proposals"),
+  );
   console.log("✓ Paper Test Results dashboard section present");
 
   const checklist = fs.readFileSync(

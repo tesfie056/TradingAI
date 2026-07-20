@@ -17,6 +17,10 @@ export type UniverseFilterInput = {
   tradable?: boolean | null;
   assetClass?: string | null;
   shortable?: boolean | null;
+  /** When false, reject (small-account / fractional paper sizing). null/undefined = unchecked. */
+  fractionable?: boolean | null;
+  /** When true, asset metadata lookup failed. */
+  assetLookupFailed?: boolean;
   /** When true, non-shortable symbols are rejected. */
   requiresShorting?: boolean;
   /** Override config for tests. */
@@ -85,6 +89,12 @@ export function evaluateUniverseEligibility(
 
   if (input.tradable === false) {
     reasons.push("Symbol not tradable through Alpaca");
+  }
+  if (input.assetLookupFailed === true) {
+    reasons.push("Asset metadata could not be verified");
+  }
+  if (input.fractionable === false) {
+    reasons.push("Asset is not supported for fractional trading");
   }
   if (input.assetClass != null && input.assetClass !== "us_equity") {
     reasons.push("Asset class is not us_equity");

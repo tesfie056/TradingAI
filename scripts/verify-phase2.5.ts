@@ -138,7 +138,7 @@ async function main() {
     }),
   );
   assert.equal(wide.action, "HOLD");
-  assert.ok(wide.reasons.some((r) => /spread too wide/i.test(r)));
+  assert.ok(wide.reasons.some((r) => /spread.*too wide/i.test(r)));
 
   // Data quality object shape
   const dq = assessDataQuality({

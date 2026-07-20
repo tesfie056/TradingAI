@@ -109,6 +109,17 @@ export async function getOrders(limit = 50): Promise<AlpacaOrder[]> {
   return tradingFetch<AlpacaOrder[]>(`/v2/orders?${params}`);
 }
 
+/** Find an order by Alpaca client_order_id among recent orders (paper only). */
+export async function findOrderByClientOrderId(
+  clientOrderId: string,
+  limit = 100,
+): Promise<AlpacaOrder | null> {
+  const orders = await getOrders(limit);
+  return (
+    orders.find((o) => o.client_order_id === clientOrderId) ?? null
+  );
+}
+
 /** Open / pending orders only. */
 export async function getOpenOrders(limit = 50): Promise<AlpacaOrder[]> {
   const params = new URLSearchParams({
@@ -309,6 +320,7 @@ export type PlaceOrderInput =
       type?: "market" | "limit";
       time_in_force?: "day" | "gtc";
       limit_price?: number;
+      client_order_id?: string;
       notional?: never;
       order_class?: never;
       take_profit?: never;
@@ -321,6 +333,7 @@ export type PlaceOrderInput =
       type?: "market" | "limit";
       time_in_force?: "day" | "gtc";
       limit_price?: number;
+      client_order_id?: string;
       qty?: never;
       order_class?: never;
       take_profit?: never;
@@ -335,6 +348,7 @@ export type PlaceOrderInput =
       order_class: "bracket";
       take_profit: { limit_price: number };
       stop_loss: { stop_price: number };
+      client_order_id?: string;
       notional?: never;
       limit_price?: never;
     };
@@ -349,6 +363,7 @@ export function buildAlpacaOrderBody(input: PlaceOrderInput): JsonRecord {
       takeProfitLimitPrice: input.take_profit.limit_price,
       stopLossStopPrice: input.stop_loss.stop_price,
       time_in_force: input.time_in_force,
+      client_order_id: input.client_order_id,
     }) as unknown as JsonRecord;
   }
 
@@ -364,6 +379,9 @@ export function buildAlpacaOrderBody(input: PlaceOrderInput): JsonRecord {
     type: input.type ?? "market",
     time_in_force: input.time_in_force ?? "day",
   };
+  if (input.client_order_id) {
+    body.client_order_id = input.client_order_id.slice(0, 48);
+  }
 
   if ("notional" in input && input.notional != null) {
     body.notional = String(input.notional);

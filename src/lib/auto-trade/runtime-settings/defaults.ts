@@ -7,6 +7,7 @@ import {
   DEFAULT_PAPER_SOAK_WATCHLIST,
   parseConfigurableWatchlist,
 } from "@/lib/universe/paper-soak-watchlist";
+import { V1_DEFAULT_WATCHLIST } from "@/lib/universe/v1-default-watchlist";
 import type { AutoTradeRuntimeSettings } from "@/lib/auto-trade/runtime-settings/types";
 
 function parsePositiveNumber(raw: string | undefined, fallback: number): number {
@@ -29,17 +30,7 @@ function parseWatchlistEnv(): string[] {
       DEFAULT_PAPER_SOAK_WATCHLIST,
     );
   }
-  const raw = process.env.WATCHLIST;
-  if (!raw?.trim()) {
-    return ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"];
-  }
-  return parseConfigurableWatchlist(raw, [
-    "AAPL",
-    "MSFT",
-    "GOOGL",
-    "AMZN",
-    "NVDA",
-  ]);
+  return parseConfigurableWatchlist(process.env.WATCHLIST, V1_DEFAULT_WATCHLIST);
 }
 
 function soakNum(standard: number, soak: number): number {

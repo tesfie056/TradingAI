@@ -216,9 +216,41 @@ async function main() {
     "AutoTradePageView.tsx",
   );
   const pageSrc = fs.readFileSync(page, "utf8");
-  assert.ok(pageSrc.includes("Watchlist scan") || pageSrc.includes("Top candidates"));
-  assert.ok(pageSrc.includes("Advanced view") || pageSrc.includes("Emergency Stop"));
-  assert.ok(pageSrc.includes("Today’s trades") || pageSrc.includes("Trades today") || pageSrc.includes("Emergency Stop"));
+  const advancedSrc = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "auto-trade",
+      "AdvancedAutoTradeDetails.tsx",
+    ),
+    "utf8",
+  );
+  const safetySrc = fs.readFileSync(
+    path.join(
+      process.cwd(),
+      "src",
+      "components",
+      "auto-trade",
+      "SafetyActionsCard.tsx",
+    ),
+    "utf8",
+  );
+  assert.ok(
+    pageSrc.includes("Watchlist status") ||
+      pageSrc.includes("V1UniversePanel") ||
+      advancedSrc.includes("Top candidates"),
+  );
+  assert.ok(
+    pageSrc.includes("AdvancedAutoTradeDetails") ||
+      pageSrc.includes("Advanced details") ||
+      safetySrc.includes("Emergency Stop"),
+  );
+  assert.ok(
+    pageSrc.includes("V1DailyProgressPanel") ||
+      pageSrc.includes("Daily progress") ||
+      safetySrc.includes("Emergency Stop"),
+  );
   assert.ok(!pageSrc.includes("AUTO_PAPER_TRADING_ENABLED=false"));
   console.log("✓ Auto Trade UI is cleaned up (simple/advanced)");
 

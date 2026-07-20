@@ -44,6 +44,7 @@ async function main() {
 
   const autoTradeFiles = [
     "src/components/auto-trade/AutoTradeControlsPanel.tsx",
+    "src/components/auto-trade/SafetyActionsCard.tsx",
     "src/components/auto-trade/AutoTradePageView.tsx",
     "src/components/auto-trade/TradingSettingsDrawer.tsx",
     "src/components/ui/ConfirmActionModal.tsx",
@@ -58,17 +59,19 @@ async function main() {
   console.log("✓ no Auto Trade action uses window.confirm/alert/prompt");
 
   const controls = read("src/components/auto-trade/AutoTradeControlsPanel.tsx");
+  const safety = read("src/components/auto-trade/SafetyActionsCard.tsx");
   assert.ok(controls.includes("ConfirmActionModal"));
-  assert.ok(controls.includes('open={modal === "closeAll"}'));
-  assert.ok(controls.includes('requireTypedText="CLOSE ALL"'));
-  assert.ok(controls.includes("{ confirm: true }"));
-  assert.ok(controls.includes("Close all paper positions?"));
-  assert.ok(controls.includes("Keep Positions Open"));
+  assert.ok(safety.includes('open={modal === "closeAll"}'));
+  assert.ok(safety.includes('requireTypedText="CLOSE ALL"'));
+  assert.ok(safety.includes("{ confirm: true }"));
+  assert.ok(safety.includes("Close all paper positions?"));
+  assert.ok(safety.includes("Keep Positions Open"));
   console.log("✓ Close All modal opens with typed CLOSE ALL confirmation");
 
-  assert.ok(controls.includes('open={modal === "emergency"}'));
-  assert.ok(controls.includes("Existing open positions will remain open"));
-  assert.ok(controls.includes("Activate Emergency Stop"));
+  assert.ok(safety.includes('open={modal === "emergency"}'));
+  assert.ok(safety.includes("Existing open positions will remain open"));
+  assert.ok(safety.includes("Activate Emergency Stop"));
+  assert.ok(safety.includes("does not close open positions") || safety.includes("remain open"));
   console.log("✓ Emergency Stop modal explains positions remain open");
 
   assert.ok(controls.includes('open={modal === "enableExecution"}'));

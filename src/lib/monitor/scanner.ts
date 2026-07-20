@@ -250,6 +250,49 @@ export async function runMonitorScan(options?: {
       });
     }
 
+    const [
+      { getPositions, getOpenOrders },
+      { readReconcileState },
+      { readRiskRuntime },
+    ] = await Promise.all([
+      import("@/lib/alpaca/client"),
+      import("@/lib/trading/reconcile"),
+      import("@/lib/risk/runtime"),
+    ]);
+    const [positions, openOrders, reconcile, riskRuntime] = await Promise.all([
+      getPositions().catch(() => []),
+      getOpenOrders(100).catch(() => []),
+      readReconcileState().catch(() => null),
+      readRiskRuntime().catch(() => null),
+    ]);
+    const reconciliationComplete =
+      riskRuntime?.reconciliationComplete === true ||
+      (reconcile != null &&
+        reconcile.completedAt != null &&
+        !reconcile.inProgress &&
+        reconcile.error == null);
+    const openPositionSymbols = positions
+      .filter((p) => Number(p.qty) !== 0)
+      .map((p) => p.symbol.toUpperCase());
+    const pendingEntrySymbols = openOrders
+      .filter(
+        (o) =>
+          o.side === "buy" &&
+          ["new", "accepted", "pending_new", "partially_filled"].includes(
+            o.status,
+          ),
+      )
+      .map((o) => o.symbol.toUpperCase());
+    const pendingExitSymbols = openOrders
+      .filter(
+        (o) =>
+          o.side === "sell" &&
+          ["new", "accepted", "pending_new", "partially_filled"].includes(
+            o.status,
+          ),
+      )
+      .map((o) => o.symbol.toUpperCase());
+
     const decisions = generateWatchlistDecisions({
       symbols,
       quotes: Array.isArray(quotes) ? quotes : [],
@@ -261,7 +304,90 @@ export async function runMonitorScan(options?: {
       isMarketOpen: Boolean(clock?.isOpen),
       newsBySymbol,
       marketCondition,
+      universeEligibleSymbols: symbols,
+      openPositionSymbols,
+      pendingEntrySymbols,
+      pendingExitSymbols,
+      reconciliationComplete,
     });
+
+    // Persist Version 1 strategy snapshot (planning only — no orders).
+    const scanId = `scan_${Date.now().toString(36)}`;
+    try {
+      const {
+        evaluateV1SimpleLong,
+        saveV1StrategyLatest,
+        appendV1StrategyDecisions,
+        minutesSinceRegularOpen,
+        minutesUntilRegularClose,
+      } = await import("@/lib/strategy/v1-simple-long");
+      const { getRiskTradingConfig } = await import("@/lib/config/risk-config");
+      const { assessDataQuality } = await import("@/lib/market/data-quality");
+      const riskCfg = getRiskTradingConfig();
+      const nowMs = Date.now();
+      const quoteMap = new Map(
+        (Array.isArray(quotes) ? quotes : []).map((q) => [
+          q.symbol.toUpperCase(),
+          q,
+        ]),
+      );
+      const v1Results = symbols.map((sym) => {
+        const q = quoteMap.get(sym);
+        const bars5 = multiBars.bars5Min?.[sym] ?? [];
+        const dq = assessDataQuality({
+          isMarketOpen: Boolean(clock?.isOpen),
+          quote: q,
+          bars: bars5,
+          nowMs,
+        });
+        return evaluateV1SimpleLong({
+          symbol: sym,
+          quote: q ?? null,
+          bars5Min: bars5,
+          bars15Min: multiBars.bars15Min?.[sym] ?? [],
+          bars1Min: multiBars.bars1Min?.[sym],
+          dataQuality: dq,
+          context: {
+            isMarketOpen: Boolean(clock?.isOpen),
+            minutesSinceOpen: clock?.isOpen
+              ? minutesSinceRegularOpen(nowMs)
+              : null,
+            minutesToClose: clock?.isOpen
+              ? minutesUntilRegularClose(nowMs)
+              : null,
+            hasOpenPosition: openPositionSymbols.includes(sym),
+            hasPendingEntry: pendingEntrySymbols.includes(sym),
+            hasPendingExit: pendingExitSymbols.includes(sym),
+            reconciliationComplete,
+            universeEligible: true,
+            openEntryDelayMinutes: riskCfg.openEntryDelayMinutes,
+            eodEntryCutoffMinutes: riskCfg.eodEntryCutoffMinutes,
+            minPrice: riskCfg.minPrice,
+            maxPrice: riskCfg.maxPrice,
+            maxSpreadPercent: riskCfg.maxSpreadPercent,
+            stopLossPct: riskCfg.defaultStopLossPct,
+            takeProfitPct: riskCfg.defaultTakeProfitPct,
+            nowMs,
+            scanId,
+          },
+        });
+      });
+      await saveV1StrategyLatest({
+        scanId,
+        evaluatedAt: new Date().toISOString(),
+        marketOpen: Boolean(clock?.isOpen),
+        results: v1Results,
+      });
+      await appendV1StrategyDecisions(
+        v1Results.map((r) => ({
+          ...r,
+          scanId,
+          dataTimestamp: quoteMap.get(r.symbol)?.timestamp ?? null,
+        })),
+      );
+    } catch {
+      // Strategy logging must never break the monitor scan
+    }
 
     const opportunities = decisionsToOpportunities(decisions, {
       ollamaUsed,
@@ -274,6 +400,16 @@ export async function runMonitorScan(options?: {
 
     const notifications = buildScanNotifications(opportunities);
     const active = await readActiveOpportunities();
+
+    // Version 1 lifecycle monitor (sync fills/protection; gated exits)
+    try {
+      const { runV1LifecycleScanTick } = await import(
+        "@/lib/trading/v1-lifecycle/scan-hook"
+      );
+      await runV1LifecycleScanTick({ marketOpen: Boolean(clock?.isOpen) });
+    } catch {
+      // Lifecycle monitor must not break scans
+    }
 
     const autoTrade = await processAutoTradesForScan({
       opportunities,

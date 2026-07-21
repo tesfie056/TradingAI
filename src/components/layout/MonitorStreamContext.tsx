@@ -78,7 +78,10 @@ export function MonitorStreamProvider({ children }: { children: ReactNode }) {
           ) {
             setStatus(data.status);
             setWorkerRunning(data.status.running);
-            setScanning(data.status.scanning);
+            // Prefer authoritative status payload; paused engine is never "scanning".
+            setScanning(
+              Boolean(data.status.scanning) && !data.status.enginePaused,
+            );
             if (data.status.marketOpen !== undefined) {
               setMarketOpen(data.status.marketOpen);
             }
@@ -88,7 +91,11 @@ export function MonitorStreamProvider({ children }: { children: ReactNode }) {
         }
       };
       source.onerror = () => {
-        if (!cancelled) setConnected(false);
+        if (!cancelled) {
+          setConnected(false);
+          // Do not keep a sticky Scanning state across reconnect gaps.
+          setScanning(false);
+        }
         source?.close();
         window.setTimeout(() => {
           if (!cancelled) connect();

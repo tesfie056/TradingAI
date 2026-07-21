@@ -40,9 +40,12 @@ export function DashboardSummary({
 
   const blockWhy: string[] = [];
   if (marketOpen === false) blockWhy.push("The U.S. market is closed.");
+  if (marketOpen === null) {
+    blockWhy.push("Market status unavailable — broker clock could not be confirmed.");
+  }
   if (!orderExecutionEnabled)
     blockWhy.push("Order execution is OFF (paper submits stay locked).");
-  if (blocked > 0 && marketOpen !== false)
+  if (blocked > 0 && marketOpen === true)
     blockWhy.push(
       `${blocked} watchlist name${blocked === 1 ? "" : "s"} blocked by risk, data quality, or HOLD.`,
     );
@@ -91,14 +94,20 @@ export function DashboardSummary({
         <SummaryCard
           label="Market"
           value={
-            marketOpen == null ? "—" : marketOpen ? "Open" : "Closed"
+            marketOpen === true
+              ? "Open"
+              : marketOpen === false
+                ? "Closed"
+                : "Unavailable"
           }
           hint={
             marketCondition
               ? `${marketCondition.label} · score ${(marketCondition.marketScore * 100).toFixed(0)}%`
               : undefined
           }
-          tone={marketOpen === false ? "warn" : marketOpen ? "ok" : "neutral"}
+          tone={
+            marketOpen === true ? "ok" : marketOpen === false ? "warn" : "warn"
+          }
         />
       </div>
 

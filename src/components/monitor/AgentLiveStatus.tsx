@@ -87,16 +87,33 @@ export function AgentLiveStatus() {
       autoTrade?.topSignalLabel ?? monitor?.topSignalLabel ?? null,
   });
 
-  const scanning = stream.scanning || monitor?.scanning === true;
+  const paused = Boolean(monitor?.enginePaused || monitor?.scanOutcome === "paused");
+  const scanning =
+    !paused && (stream.scanning || monitor?.scanning === true);
   const scannedList =
     autoTrade?.lastScan?.symbols ?? monitor?.scannedSymbols ?? [];
+  const watchlistSize =
+    monitor?.watchlistSize ??
+    scannedList.length ??
+    autoTrade?.lastScan?.stocksScanned ??
+    0;
 
   return (
     <div className="rounded-[var(--radius-sm)] border border-amber-500/30 bg-gradient-to-br from-amber-500/10 to-[var(--panel-elevated)]/40 px-4 py-3">
       <div className="mb-2 flex items-center gap-2">
-        <StatusDot tone={scanning ? "warn" : stream.workerRunning ? "ok" : "neutral"} />
+        <StatusDot
+          tone={
+            paused
+              ? "warn"
+              : scanning
+                ? "warn"
+                : stream.workerRunning
+                  ? "ok"
+                  : "neutral"
+          }
+        />
         <span className="text-sm font-semibold tracking-wide text-amber-50">
-          {scanning ? "Scanning now…" : "Agent live"}
+          {paused ? "Engine paused" : scanning ? "Scanning now…" : "Agent live"}
         </span>
         {stream.connected ? (
           <span className="text-xs text-emerald-200/80">SSE</span>
@@ -121,6 +138,16 @@ export function AgentLiveStatus() {
           }
         />
         <Row
+          label="Watchlist"
+          value={
+            watchlistSize > 0
+              ? `${watchlistSize} stocks`
+              : paused
+                ? "Paused — not scanning"
+                : "—"
+          }
+        />
+        <Row
           label="Watchlist scanned"
           value={
             scannedList.length > 0
@@ -132,8 +159,12 @@ export function AgentLiveStatus() {
         />
         <Row
           label="Top signal"
-          value={snapshot.topSignalLabel}
-          highlight={snapshot.topSymbol !== "—"}
+          value={
+            paused
+              ? "Scanning suspended — engine paused"
+              : snapshot.topSignalLabel
+          }
+          highlight={!paused && snapshot.topSymbol !== "—"}
         />
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <span className="text-[var(--muted)]">Auto trade status</span>
@@ -142,7 +173,14 @@ export function AgentLiveStatus() {
             {autoTradeUiLabel(snapshot.autoStatus)}
           </span>
         </div>
-        <Row label="Reason" value={snapshot.reason} />
+        <Row
+          label="Reason"
+          value={
+            paused
+              ? (monitor?.pauseReason ?? monitor?.lastError ?? snapshot.reason)
+              : snapshot.reason
+          }
+        />
       </div>
     </div>
   );
@@ -156,18 +194,21 @@ export function AgentLiveStatusCompact({
 }) {
   const stream = useMonitorStream();
   const status = monitor ?? stream.status;
-  const scanning = stream.scanning || status?.scanning;
+  const paused = Boolean(status?.enginePaused || status?.scanOutcome === "paused");
+  const scanning = !paused && (stream.scanning || status?.scanning);
 
   return (
     <p className="text-sm text-[var(--muted)]">
-      {scanning
-        ? "Scanning now…"
-        : status?.lastScanAt
-          ? `Last scan ${formatTime(status.lastScanAt)}`
-          : "No scan yet"}
-      {status?.topSignalLabel
+      {paused
+        ? `Engine paused${status?.pauseReason ? ` · ${status.pauseReason}` : ""}`
+        : scanning
+          ? "Scanning now…"
+          : status?.lastScanAt
+            ? `Last scan ${formatTime(status.lastScanAt)}`
+            : "No scan yet"}
+      {!paused && status?.topSignalLabel
         ? ` · ${status.topSignalLabel}`
-        : status?.topOpportunity
+        : !paused && status?.topOpportunity
           ? ` · Top from ${status.stocksScanned || "?"} scanned: ${status.topOpportunity.symbol}`
           : null}
     </p>

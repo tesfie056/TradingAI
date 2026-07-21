@@ -12,6 +12,13 @@ import {
   type StatusKey,
 } from "@/lib/client/status-config";
 import type { SystemStatusTone } from "@/lib/client/system-status-label";
+import {
+  isBenignMonitorNote,
+  isEnginePauseNote,
+  isRealScanFailure,
+  mapEngineHealth,
+  mapScanStatus,
+} from "@/lib/client/runtime-status-mapper";
 
 export type StatusLightKind = "solid" | "ring" | "hollow" | "alert";
 
@@ -30,8 +37,12 @@ export type SystemStatusSnapshot = {
   newsProvider?: string;
   monitorLastError?: string | null;
   monitorLastScanAt?: string | null;
+  monitorNextScanAt?: string | null;
   monitorStocksScanned?: number | null;
   monitorOllamaAvailable?: boolean | null;
+  engineState?: string | null;
+  runtimeDisabled?: boolean | null;
+  lastEvaluatedSymbol?: string | null;
   checkedAt?: string | null;
 };
 
@@ -117,9 +128,16 @@ function mapAgent(s: SystemStatusSnapshot): StatusItem {
     state = "Idle";
     detail = "Connected, waiting for the next monitor cycle.";
   } else if (s.agentConnected === false) {
-    tone = "bad";
-    state = "Unavailable";
-    detail = "The live monitor connection is not available.";
+    if (s.agentRunning) {
+      tone = "warn";
+      state = "Stream delayed";
+      detail =
+        "Live updates are reconnecting; the monitor worker may still be running.";
+    } else {
+      tone = "warn";
+      state = "Reconnecting";
+      detail = "The live monitor connection is reconnecting.";
+    }
   } else {
     tone = "neutral";
     state = "Not connected";
@@ -135,7 +153,8 @@ function mapAgent(s: SystemStatusSnapshot): StatusItem {
     detail,
     tooltip: tip(name, state, detail, hb),
     visible: true,
-    critical: tone === "bad",
+    // Stream drops are warnings; engine/monitor rows own hard failures.
+    critical: false,
     href: STATUS_HREF.agent ?? null,
     updatedAt: hb,
   };
@@ -223,6 +242,11 @@ function mapMarket(s: SystemStatusSnapshot): StatusItem {
     tone = "warn";
     state = "Closed";
     detail = "New stock entries are waiting until the market opens.";
+  } else if (s.marketOpen === null) {
+    tone = "warn";
+    state = "Unavailable";
+    detail =
+      "Market status unavailable — broker clock could not be confirmed. New orders stay blocked.";
   }
 
   return {
@@ -247,21 +271,21 @@ function mapAuto(s: SystemStatusSnapshot): StatusItem {
   let detail = "Auto trading is off.";
 
   if (!s.safetyOk && on) {
-    tone = "bad";
-    state = "Blocked";
-    detail = "Auto trading is on but a safety condition is blocking operation.";
+    tone = "warn";
+    state = "Waiting";
+    detail = "Auto trading is on but a safety condition is blocking new trades.";
   } else if (on && !s.orderExecutionEnabled) {
     tone = "warn";
     state = "Waiting";
     detail = "Auto trading is on; paper execution is still off.";
   } else if (on) {
     tone = "ok";
-    state = "Running";
-    detail = "Auto trading is enabled for paper orders.";
+    state = "On";
+    detail = "The system is allowed to scan automatically.";
   } else {
     tone = "neutral";
     state = "Off";
-    detail = "Auto trading is off.";
+    detail = "Auto trading is intentionally off.";
   }
 
   return {
@@ -273,7 +297,7 @@ function mapAuto(s: SystemStatusSnapshot): StatusItem {
     detail,
     tooltip: tip(name, state, detail, s.checkedAt),
     visible: true,
-    critical: tone === "bad",
+    critical: false,
     href: STATUS_HREF.auto ?? null,
     updatedAt: s.checkedAt ?? null,
   };
@@ -303,6 +327,27 @@ function mapExecution(s: SystemStatusSnapshot): StatusItem {
   };
 }
 
+function runtimeInput(s: SystemStatusSnapshot) {
+  return {
+    autoTradingEnabled: Boolean(s.autoTradingEnabled),
+    orderExecutionEnabled: s.orderExecutionEnabled,
+    marketOpen: s.marketOpen,
+    monitorRunning: Boolean(s.agentRunning),
+    monitorScanning: Boolean(s.agentScanning),
+    monitorConnected: s.agentConnected,
+    lastScanAt: s.monitorLastScanAt,
+    nextScanAt: s.monitorNextScanAt,
+    stocksScanned: s.monitorStocksScanned,
+    lastError: s.monitorLastError,
+    heartbeatAt: s.agentHeartbeatAt,
+    engineState: s.engineState,
+    runtimeDisabled: s.runtimeDisabled,
+    safetyOk: s.safetyOk,
+    safetyLabel: s.safetyLabel,
+    lastEvaluatedSymbol: s.lastEvaluatedSymbol,
+  };
+}
+
 function mapMonitor(s: SystemStatusSnapshot): StatusItem {
   const name = STATUS_LABELS.monitor;
   const err = s.monitorLastError?.trim() || null;
@@ -310,23 +355,39 @@ function mapMonitor(s: SystemStatusSnapshot): StatusItem {
   const scanStale =
     s.monitorLastScanAt != null &&
     (ageMs(s.monitorLastScanAt) ?? 0) > SCAN_STALE_MS;
+  const realFail = isRealScanFailure(err);
 
   let tone: SystemStatusTone = "neutral";
   let state = "Stopped";
   let detail = "Monitor is stopped.";
 
-  if (err && (s.agentRunning || s.agentScanning)) {
+  if (realFail && (s.agentRunning || s.agentScanning)) {
     tone = "bad";
     state = "Error";
-    detail = err;
+    detail = err ?? "The monitor loop failed unexpectedly.";
+  } else if (
+    s.runtimeDisabled ||
+    s.engineState === "PAUSED" ||
+    s.engineState === "EMERGENCY_STOPPED" ||
+    isEnginePauseNote(err)
+  ) {
+    tone = "warn";
+    state = "Paused";
+    detail = err ?? "New entries are paused. Resume Engine to allow scans.";
   } else if (s.agentScanning) {
     tone = "ok";
     state = "Scanning";
-    detail = scanAgo ? `Scan in progress · last completed ${scanAgo}` : "Scan in progress.";
+    detail = scanAgo
+      ? `Scan in progress · last completed ${scanAgo}`
+      : "Scan in progress.";
   } else if (s.agentRunning) {
-    if (scanStale) {
+    if (isBenignMonitorNote(err) && err) {
       tone = "warn";
-      state = "Scan delayed";
+      state = "Waiting";
+      detail = err;
+    } else if (scanStale) {
+      tone = "warn";
+      state = "Delayed";
       detail = scanAgo
         ? `Monitor is running · last scan ${scanAgo}`
         : "Monitor is running but the last scan is delayed.";
@@ -335,7 +396,7 @@ function mapMonitor(s: SystemStatusSnapshot): StatusItem {
       state = "Running";
       detail = scanAgo
         ? `Monitor is running · last scan ${scanAgo}`
-        : "Monitor is running.";
+        : "Monitor is running and scheduling scans.";
     }
   } else if (s.agentConnected) {
     tone = "warn";
@@ -358,6 +419,42 @@ function mapMonitor(s: SystemStatusSnapshot): StatusItem {
   };
 }
 
+function mapScan(s: SystemStatusSnapshot): StatusItem {
+  const name = STATUS_LABELS.scan;
+  const mapped = mapScanStatus(runtimeInput(s));
+  return {
+    key: "scan",
+    name,
+    tone: mapped.tone,
+    light: lightFor(mapped.tone, mapped.critical),
+    state: mapped.state,
+    detail: mapped.detail,
+    tooltip: tip(name, mapped.state, mapped.detail, s.monitorLastScanAt),
+    visible: true,
+    critical: mapped.critical,
+    href: STATUS_HREF.scan ?? null,
+    updatedAt: s.monitorLastScanAt ?? s.agentHeartbeatAt ?? null,
+  };
+}
+
+function mapEngine(s: SystemStatusSnapshot): StatusItem {
+  const name = STATUS_LABELS.engine;
+  const mapped = mapEngineHealth(runtimeInput(s));
+  return {
+    key: "engine",
+    name,
+    tone: mapped.tone,
+    light: lightFor(mapped.tone, mapped.critical),
+    state: mapped.state,
+    detail: mapped.detail,
+    tooltip: tip(name, mapped.state, mapped.detail, s.agentHeartbeatAt),
+    visible: true,
+    critical: mapped.critical,
+    href: STATUS_HREF.engine ?? null,
+    updatedAt: s.agentHeartbeatAt ?? s.checkedAt ?? null,
+  };
+}
+
 function mapData(s: SystemStatusSnapshot): StatusItem | null {
   const hasSignal =
     s.monitorLastScanAt != null ||
@@ -366,12 +463,14 @@ function mapData(s: SystemStatusSnapshot): StatusItem | null {
   if (!hasSignal) return null;
 
   const name = STATUS_LABELS.data;
-  const err = s.monitorLastError?.toLowerCase() ?? "";
+  const rawErr = s.monitorLastError?.trim() || null;
+  const err = rawErr?.toLowerCase() ?? "";
   const dataish =
-    err.includes("quote") ||
-    err.includes("data") ||
-    err.includes("bar") ||
-    err.includes("stale");
+    isRealScanFailure(rawErr) &&
+    (err.includes("quote") ||
+      err.includes("data") ||
+      err.includes("bar") ||
+      err.includes("stale"));
 
   let tone: SystemStatusTone = "ok";
   let state = "Current";
@@ -380,7 +479,7 @@ function mapData(s: SystemStatusSnapshot): StatusItem | null {
   if (dataish) {
     tone = "bad";
     state = "Unavailable";
-    detail = s.monitorLastError ?? "Market data is unavailable.";
+    detail = rawErr ?? "Market data is unavailable.";
   } else if (s.marketOpen === false) {
     tone = "warn";
     state = "Waiting";
@@ -458,9 +557,11 @@ function mapErrors(s: SystemStatusSnapshot, items: StatusItem[]): StatusItem | n
   if (!s.safetyOk && s.safetyLabel && s.safetyLabel !== "checking") {
     extras.push(s.safetyLabel);
   }
-  if (s.monitorLastError) extras.push(s.monitorLastError);
-  const count = Math.max(critical.length, extras.length > 0 ? 1 : 0);
-  if (count === 0 && critical.length === 0) return null;
+  if (isRealScanFailure(s.monitorLastError)) {
+    extras.push(s.monitorLastError!.trim());
+  }
+  const count = Math.max(critical.length, extras.length > 0 ? critical.length || 1 : 0);
+  if (critical.length === 0 && extras.length === 0) return null;
 
   const name = STATUS_LABELS.errors;
   const tone: SystemStatusTone = "bad";
@@ -498,6 +599,8 @@ export function buildSystemStatusItems(
   if (data) base.push(data);
   base.push(mapMarket(snapshot));
   base.push(mapMonitor(snapshot));
+  base.push(mapScan(snapshot));
+  base.push(mapEngine(snapshot));
   base.push(mapExecution(snapshot));
   base.push(mapAuto(snapshot));
   const ai = mapAi(snapshot);
@@ -526,8 +629,12 @@ export function snapshotFromShellProps(props: {
   newsProvider?: string;
   monitorLastError?: string | null;
   monitorLastScanAt?: string | null;
+  monitorNextScanAt?: string | null;
   monitorStocksScanned?: number | null;
   monitorOllamaAvailable?: boolean | null;
+  engineState?: string | null;
+  runtimeDisabled?: boolean | null;
+  lastEvaluatedSymbol?: string | null;
 }): SystemStatusSnapshot {
   return {
     ...props,

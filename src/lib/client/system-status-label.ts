@@ -38,6 +38,9 @@ export function resolveSystemStatusLabel(input: SystemStatusInput): {
   if (input.marketOpen === false) {
     return { label: "Market closed", tone: "warn" };
   }
+  if (input.marketOpen === null) {
+    return { label: "Market status unavailable", tone: "warn" };
+  }
   if (input.autoTradingEnabled && input.orderExecutionEnabled) {
     return { label: "System ready", tone: "ok" };
   }

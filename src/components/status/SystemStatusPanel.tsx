@@ -2,16 +2,20 @@
 
 import { useEffect, useId, useRef } from "react";
 import Link from "next/link";
-import { formatTime } from "@/lib/format";
 import type { StatusItem } from "@/lib/client/status-state-mapper";
-import { StatusGlyph } from "@/components/status/StatusGlyph";
-import { StatusLight } from "@/components/status/StatusLight";
+import { RuntimeStatusRow } from "@/components/status/RuntimeStatusRow";
 
 function actionLabel(item: StatusItem): string | null {
   if (!item.href) return null;
   if (item.key === "safety" && item.critical) return "Review safety issue";
-  if (item.key === "auto" || item.key === "execution") return "Open Auto Trading";
-  if (item.key === "monitor" || item.key === "agent") {
+  if (item.key === "auto" || item.key === "execution" || item.key === "engine") {
+    return "Open Auto Trading";
+  }
+  if (
+    item.key === "monitor" ||
+    item.key === "agent" ||
+    item.key === "scan"
+  ) {
     return "Open Advanced Monitoring";
   }
   if (item.key === "errors") return "Open Activity";
@@ -103,37 +107,16 @@ export function SystemStatusPanel({
                 key={item.key}
                 className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-3 py-2.5"
               >
-                <div className="flex items-start gap-2.5">
-                  <span className="mt-0.5 text-zinc-300">
-                    <StatusGlyph id={item.key} />
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-medium text-zinc-100">
-                        {item.name}
-                      </p>
-                      <StatusLight tone={item.tone} kind={item.light} />
-                      <span className="text-xs text-zinc-300">{item.state}</span>
-                    </div>
-                    <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-                      {item.detail}
-                    </p>
-                    {item.updatedAt ? (
-                      <p className="mt-1 text-[11px] text-zinc-500">
-                        Updated {formatTime(item.updatedAt)}
-                      </p>
-                    ) : null}
-                    {action && item.href ? (
-                      <Link
-                        href={item.href}
-                        onClick={onClose}
-                        className="mt-2 inline-block text-xs text-amber-100 underline"
-                      >
-                        {action}
-                      </Link>
-                    ) : null}
-                  </div>
-                </div>
+                <RuntimeStatusRow item={item} />
+                {action && item.href ? (
+                  <Link
+                    href={item.href}
+                    onClick={onClose}
+                    className="mt-2 ml-7 inline-block text-xs text-amber-100 underline"
+                  >
+                    {action}
+                  </Link>
+                ) : null}
               </li>
             );
           })}

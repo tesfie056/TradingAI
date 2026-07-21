@@ -62,7 +62,11 @@ export function AutoTradeStatusHeader({
 }: StatusHeaderProps) {
   const dataLabel = marketDataStatusLabel(dataFreshness);
   const marketLabel =
-    marketOpen == null ? "Market Unknown" : marketOpen ? "Market Open" : "Market Closed";
+    marketOpen === true
+      ? "Market Open"
+      : marketOpen === false
+        ? "Market Closed"
+        : "Market status unavailable";
 
   return (
     <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-3 py-3">

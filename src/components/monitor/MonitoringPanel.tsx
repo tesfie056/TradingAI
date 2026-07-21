@@ -7,6 +7,7 @@ import { formatTime } from "@/lib/format";
 import {
   isOpportunityBlocked,
   monitorTradeStatus,
+  opportunityDetailLine,
   primaryBlockReason,
   topSignalHeadline,
 } from "@/lib/monitor/display";
@@ -29,19 +30,64 @@ type MonitorApi = MonitorStatus & {
   scan?: { opportunitiesFound?: number; error?: string };
 };
 
-function statusTone(
-  status: MonitorStatus["status"],
-): "ok" | "warn" | "bad" | "neutral" {
-  if (status === "running") return "ok";
-  if (status === "scanning") return "warn";
-  return "neutral";
+function genuinelyScanning(status: MonitorStatus | null, streamScanning: boolean): boolean {
+  if (status?.enginePaused) return false;
+  if (status?.scanOutcome === "paused") return false;
+  if (status?.scanStalled) return false;
+  return Boolean(status?.scanning || streamScanning);
 }
 
 function primaryMonitorMessage(input: {
   status: MonitorStatus | null;
   marketClosed: boolean;
+  marketUnavailable: boolean;
   scanning: boolean;
-}): { message: string; tone: "ok" | "warn" | "neutral" | "info"; detail: string } {
+}): { message: string; tone: "ok" | "warn" | "neutral" | "info" | "bad"; detail: string } {
+  const s = input.status;
+  if (s?.scanStalled || s?.scanOutcome === "stalled") {
+    return {
+      message: "Scan appears stalled",
+      tone: "bad",
+      detail: s.scanStartedAt
+        ? `No progress update since ${formatTime(s.scanStartedAt)}. Retry after the lock clears, or restart the monitor.`
+        : "A scan flag stayed active without progress. Retry when ready.",
+    };
+  }
+  if (s?.enginePaused || s?.scanOutcome === "paused") {
+    return {
+      message: "Engine paused",
+      tone: "warn",
+      detail:
+        s.pauseReason ??
+        s.lastError ??
+        "New entries are paused. Resume Engine from Auto Trading to allow scans.",
+    };
+  }
+  if (s?.scanOutcome === "failed" && s.lastError) {
+    return {
+      message: "Scan failed",
+      tone: "bad",
+      detail: s.lastError,
+    };
+  }
+  if (input.scanning) {
+    return {
+      message: "Scan in progress",
+      tone: "warn",
+      detail: s?.scanStartedAt
+        ? `Scanning watchlist. Started ${formatTime(s.scanStartedAt)}.`
+        : "Checking the watchlist for paper-trade setups.",
+    };
+  }
+  if (input.marketUnavailable) {
+    return {
+      message: "Market status unavailable",
+      tone: "warn",
+      detail:
+        s?.clockError?.trim() ||
+        "Broker clock could not be confirmed. New paper orders stay blocked until market status is available.",
+    };
+  }
   if (input.marketClosed) {
     return {
       message: "Market is closed",
@@ -49,18 +95,13 @@ function primaryMonitorMessage(input: {
       detail: "Monitoring can continue. Paper trading waits until the market opens.",
     };
   }
-  if (input.scanning || input.status?.status === "scanning") {
-    return {
-      message: "Scan in progress",
-      tone: "warn",
-      detail: "Checking the watchlist for paper-trade setups.",
-    };
-  }
-  if (input.status?.running) {
+  if (s?.running) {
     return {
       message: "Monitor is active",
       tone: "ok",
-      detail: "The agent is watching your watchlist. It never places orders.",
+      detail: s.nextScanAt
+        ? `Waiting for the next scan at ${formatTime(s.nextScanAt)}.`
+        : "The agent is watching your watchlist and handing eligible setups to Auto Trading.",
     };
   }
   return {
@@ -68,6 +109,23 @@ function primaryMonitorMessage(input: {
     tone: "neutral",
     detail: "Start monitoring or run a scan when you want fresh setups.",
   };
+}
+
+function scanLabel(status: MonitorStatus | null, scanning: boolean): string {
+  if (status?.enginePaused || status?.scanOutcome === "paused") return "Paused";
+  if (status?.scanStalled || status?.scanOutcome === "stalled") return "Stalled";
+  if (scanning || status?.scanOutcome === "scanning") return "Scanning";
+  if (status?.scanOutcome === "failed") return "Failed";
+  if (status?.scanOutcome === "completed") return "Completed";
+  if (status?.running) return "Scheduled";
+  return "Idle";
+}
+
+function engineLabel(status: MonitorStatus | null): string {
+  if (status?.enginePaused) return "Paused";
+  if (status?.scanOutcome === "failed" && status.lastError) return "Error";
+  if (status?.running) return "Ready";
+  return "Idle";
 }
 
 export function MonitoringPanel() {
@@ -136,25 +194,60 @@ export function MonitoringPanel() {
   const top = status?.topOpportunity ?? null;
   const notifications = status?.notifications ?? [];
   const logs = status?.recentLogs ?? [];
+  const marketUnavailable =
+    status?.marketSessionStatus === "unavailable" ||
+    status?.marketOpen === null ||
+    top?.marketStatus === "unavailable" ||
+    (top != null &&
+      primaryBlockReason(top, { marketOpen: status?.marketOpen }) ===
+        "Market status unavailable");
   const marketClosed =
-    top?.marketStatus === "closed" ||
-    (top != null && primaryBlockReason(top) === "Market closed");
+    !marketUnavailable &&
+    (status?.marketOpen === false ||
+      top?.marketStatus === "closed" ||
+      (top != null &&
+        primaryBlockReason(top, { marketOpen: status?.marketOpen }) ===
+          "Market closed"));
+  const scanning = genuinelyScanning(status, stream.scanning);
   const primary = primaryMonitorMessage({
     status,
     marketClosed,
-    scanning: Boolean(status?.scanning || stream.scanning),
+    marketUnavailable,
+    scanning,
   });
 
-  const stocksMonitored =
+  const watchlistCount =
+    status?.watchlistSize ??
+    status?.scannedSymbols?.length ??
+    status?.stocksScanned ??
+    0;
+  const stocksChecked =
     status?.stocksScanned || status?.scannedSymbols?.length || 0;
+  const hasHardError =
+    Boolean(error) ||
+    status?.scanOutcome === "failed" ||
+    status?.scanStalled === true;
   const compactTone =
     primary.tone === "ok"
       ? "ok"
       : primary.tone === "warn"
         ? "warn"
-        : status?.lastError || error
+        : primary.tone === "bad" || hasHardError
           ? "bad"
           : "neutral";
+
+  const runScanDisabled =
+    busy ||
+    scanning ||
+    Boolean(status?.enginePaused) ||
+    status?.scanOutcome === "paused";
+  const runScanLabel = scanning
+    ? "Scanning…"
+    : status?.enginePaused || status?.scanOutcome === "paused"
+      ? "Paused"
+      : status?.scanOutcome === "failed" || status?.scanStalled
+        ? "Retry scan"
+        : "Run scan";
 
   return (
     <div id="monitor" className="scroll-mt-24 flex flex-col gap-4">
@@ -165,24 +258,45 @@ export function MonitoringPanel() {
         tone={compactTone}
         metrics={[
           {
-            label: "Status",
+            label: "Monitor",
             value: status?.running
-              ? status.status === "scanning"
-                ? "Scanning"
+              ? status.scanOutcome === "failed"
+                ? "Failed"
                 : "Running"
               : "Stopped",
           },
           {
-            label: "Last scan",
-            value: status?.lastScanAt ? formatTime(status.lastScanAt) : "Never",
+            label: "Engine",
+            value: engineLabel(status),
           },
           {
-            label: "Stocks monitored",
-            value: String(stocksMonitored),
+            label: "Scan",
+            value: scanLabel(status, scanning),
+          },
+          {
+            label: "Watchlist",
+            value:
+              watchlistCount > 0
+                ? `${watchlistCount} stocks`
+                : status?.enginePaused
+                  ? "Unavailable while paused"
+                  : "Unavailable",
+          },
+          {
+            label: "Last scan",
+            value: status?.lastScanAt
+              ? formatTime(status.lastScanAt)
+              : status?.lastSkipAt
+                ? `Skip ${formatTime(status.lastSkipAt)}`
+                : "Never",
           },
           {
             label: "Errors",
-            value: error || status?.lastError ? "Attention" : "None",
+            value: hasHardError
+              ? "Attention required"
+              : status?.enginePaused
+                ? "Paused"
+                : "None",
           },
         ]}
         action={
@@ -205,11 +319,11 @@ export function MonitoringPanel() {
             </button>
             <button
               type="button"
-              disabled={busy || Boolean(status?.scanning)}
+              disabled={runScanDisabled}
               onClick={() => void postAction("/api/monitor/scan")}
               className="ui-btn min-h-10 border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-sm font-medium text-amber-100 disabled:opacity-50"
             >
-              {status?.scanning ? "Scanning…" : "Run scan"}
+              {runScanLabel}
             </button>
             <button
               type="button"
@@ -225,22 +339,46 @@ export function MonitoringPanel() {
           <>
             <p className="mt-3 text-sm text-[var(--muted)]">
               Monitoring controls
-              <InfoTip text="Scans your watchlist for setups. Monitoring never places orders." />
+              <InfoTip text="Advanced Monitoring analyzes stocks. When Auto Trading and Paper Execution are enabled, eligible setups are handled by the Auto Trading engine." />
             </p>
             {error ? (
               <p className="mt-3 rounded-[var(--radius-sm)] border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">
                 {error}
               </p>
             ) : null}
-            {status?.lastError ? (
+            {status?.enginePaused && status.pauseReason ? (
               <p className="mt-2 text-sm text-amber-100/90">
-                Last scan note: {status.lastError}
+                Pause reason: {status.pauseReason}
               </p>
             ) : null}
+            {!status?.enginePaused &&
+            status?.lastError &&
+            status.scanOutcome === "failed" ? (
+              <p className="mt-2 text-sm text-rose-100/90">
+                Last scan error: {status.lastError}
+              </p>
+            ) : null}
+            {scanning ? (
+              <p className="mt-2 text-sm text-zinc-200">
+                Scanning watchlist
+                {watchlistCount > 0 ? ` (${watchlistCount} stocks)` : ""}.
+                {status?.scanStartedAt
+                  ? ` Started ${formatTime(status.scanStartedAt)}.`
+                  : ""}{" "}
+                Waiting for the next engine update.
+              </p>
+            ) : null}
+            <LastScanResultSummary
+              summary={status?.scanSummary}
+              stocksChecked={stocksChecked}
+              lastScanAt={status?.lastScanAt}
+            />
             <MonitorNotifications notifications={notifications} />
             <TopOpportunityCard
               opportunity={top}
-              stocksScanned={stocksMonitored}
+              stocksScanned={stocksChecked}
+              enginePaused={Boolean(status?.enginePaused)}
+              marketOpen={status?.marketOpen ?? null}
             />
           </>
         }
@@ -257,22 +395,67 @@ export function MonitoringPanel() {
       >
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <Stat
-            label="Agent status"
-            value={status?.status ?? "—"}
-            tone={status ? statusTone(status.status) : "neutral"}
+            label="Monitor"
+            value={status?.running ? "Running" : "Stopped"}
+            tone={status?.running ? "ok" : "neutral"}
           />
           <Stat
-            label="Last scan"
+            label="Engine"
+            value={engineLabel(status)}
+            tone={status?.enginePaused ? "warn" : "ok"}
+          />
+          <Stat
+            label="Market"
+            value={
+              status?.marketOpen === true
+                ? "Open"
+                : status?.marketOpen === false
+                  ? "Closed"
+                  : "Unavailable"
+            }
+            tone={
+              status?.marketOpen === true
+                ? "ok"
+                : status?.marketOpen === false
+                  ? "neutral"
+                  : "warn"
+            }
+          />
+          <Stat
+            label="Scan"
+            value={scanLabel(status, scanning)}
+            tone={
+              status?.enginePaused
+                ? "warn"
+                : scanning
+                  ? "warn"
+                  : status?.scanOutcome === "failed"
+                    ? "bad"
+                    : "neutral"
+            }
+          />
+          <Stat
+            label="Watchlist"
+            value={
+              (status?.watchlistSize ?? 0) > 0
+                ? `${status?.watchlistSize} stocks`
+                : "Unavailable"
+            }
+          />
+          <Stat
+            label="Last successful scan"
             value={status?.lastScanAt ? formatTime(status.lastScanAt) : "Never"}
           />
           <Stat
             label="Next scan"
             value={
-              status?.running && status.nextScanAt
-                ? formatTime(status.nextScanAt)
-                : status?.running
-                  ? "Pending"
-                  : "—"
+              status?.enginePaused
+                ? "Paused"
+                : status?.running && status.nextScanAt
+                  ? formatTime(status.nextScanAt)
+                  : status?.running
+                    ? "Pending"
+                    : "—"
             }
           />
           <Stat
@@ -286,7 +469,7 @@ export function MonitoringPanel() {
             }
           />
           <Stat
-            label="Stocks scanned"
+            label="Stocks checked (last)"
             value={String(status?.stocksScanned ?? 0)}
           />
           <Stat
@@ -353,6 +536,57 @@ export function MonitoringPanel() {
   );
 }
 
+function LastScanResultSummary({
+  summary,
+  stocksChecked,
+  lastScanAt,
+}: {
+  summary: MonitorStatus["scanSummary"];
+  stocksChecked: number;
+  lastScanAt?: string | null;
+}) {
+  if (!summary && !(stocksChecked > 0 && lastScanAt)) return null;
+  return (
+    <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--border)]/80 bg-[var(--panel-elevated)]/40 px-3 py-2 text-xs text-zinc-300">
+      <p className="font-medium text-zinc-100">Last scan completed</p>
+      {summary ? (
+        <ul className="mt-1 space-y-0.5">
+          <li>{summary.stocksReceived} stocks received</li>
+          <li>{summary.stocksEvaluated} evaluated</li>
+          {summary.missingData > 0 ? (
+            <li>{summary.missingData} missing current data</li>
+          ) : null}
+          {summary.rejectedBySignal > 0 ? (
+            <li>{summary.rejectedBySignal} did not meet entry rules</li>
+          ) : null}
+          {summary.rejectedBySpread > 0 ? (
+            <li>{summary.rejectedBySpread} rejected by spread</li>
+          ) : null}
+          {summary.rejectedBySafety > 0 ? (
+            <li>{summary.rejectedBySafety} blocked by safety</li>
+          ) : null}
+          {summary.alreadyHeld > 0 ? (
+            <li>{summary.alreadyHeld} already held</li>
+          ) : null}
+          <li>
+            {summary.eligible} eligible · {summary.ordersSubmitted} orders
+            submitted
+          </li>
+          {summary.eligible === 0 ? (
+            <li>No stocks met all entry rules</li>
+          ) : null}
+          <li>Completed at {formatTime(summary.completedAt)}</li>
+        </ul>
+      ) : (
+        <ul className="mt-1 space-y-0.5">
+          <li>{stocksChecked} stocks checked</li>
+          {lastScanAt ? <li>Completed at {formatTime(lastScanAt)}</li> : null}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function emptyStatus(): MonitorStatus {
   return {
     paperOnly: true,
@@ -374,6 +608,11 @@ function emptyStatus(): MonitorStatus {
     ollamaAvailable: null,
     notifications: [],
     recentLogs: [],
+    enginePaused: false,
+    pauseReason: null,
+    scanOutcome: "idle",
+    watchlistSize: 0,
+    scanSummary: null,
   };
 }
 
@@ -427,9 +666,13 @@ export function MonitorNotifications({
 function TopOpportunityCard({
   opportunity,
   stocksScanned,
+  enginePaused,
+  marketOpen,
 }: {
   opportunity: MonitorOpportunity | null;
   stocksScanned?: number;
+  enginePaused?: boolean;
+  marketOpen?: boolean | null;
 }) {
   if (!opportunity) {
     return (
@@ -439,11 +682,12 @@ function TopOpportunityCard({
     );
   }
 
-  const blocked = isOpportunityBlocked(opportunity);
-  const tradeStatus = monitorTradeStatus(opportunity);
-  const primary = primaryBlockReason(opportunity);
-  const marketClosed =
-    opportunity.marketStatus === "closed" || primary === "Market closed";
+  const ctx = { enginePaused, marketOpen };
+  const blocked = isOpportunityBlocked(opportunity, ctx);
+  const tradeStatus = monitorTradeStatus(opportunity, ctx);
+  const primary = primaryBlockReason(opportunity, ctx);
+  const marketClosed = tradeStatus === "Waiting for market";
+  const eligible = tradeStatus === "Trade eligible" && !enginePaused;
 
   return (
     <div
@@ -467,7 +711,7 @@ function TopOpportunityCard({
       </div>
 
       <p className="mt-1.5 text-base font-semibold leading-snug">
-        {topSignalHeadline(opportunity)}
+        {topSignalHeadline(opportunity, ctx)}
         {blocked && primary ? (
           <span className="ml-2 text-sm font-semibold text-amber-100">
             · {primary}
@@ -484,7 +728,7 @@ function TopOpportunityCard({
           <dt className="text-xs text-[var(--muted)]">Trade status</dt>
           <dd
             className={`mt-0.5 font-semibold ${
-              tradeStatus === "Ready" ? "text-emerald-200" : "text-amber-100"
+              eligible ? "text-emerald-200" : "text-amber-100"
             }`}
           >
             {tradeStatus}
@@ -493,24 +737,25 @@ function TopOpportunityCard({
         <div className="rounded-[var(--radius-sm)] border border-[var(--border)]/60 bg-[var(--panel)]/40 px-2.5 py-2">
           <dt className="text-xs text-[var(--muted)]">Primary reason</dt>
           <dd className="mt-0.5 font-semibold">
-            {tradeStatus === "Ready" ? "None" : (primary ?? "—")}
+            {eligible ? "None" : (primary ?? "—")}
           </dd>
         </div>
       </dl>
 
       <p className="mt-2 text-sm text-[var(--foreground)]/85">
-        {opportunity.reason}
+        {opportunityDetailLine(opportunity, ctx)}
       </p>
 
       {marketClosed ? (
         <p className="mt-2 text-sm font-medium text-amber-100">
-          Monitoring continues. Trading waits until market opens.
+          Waiting for market open before paper-order submission. A fresh
+          eligibility check runs after the opening delay.
         </p>
       ) : null}
 
       <p className="mt-2 text-xs leading-relaxed text-[var(--muted)]">
-        Setups can be detected anytime, but paper orders still need market, data,
-        and risk checks to pass.
+        Advanced Monitoring finds setups. Auto Trading places Alpaca paper orders
+        when Paper Execution and Auto Trading are enabled and all checks pass.
       </p>
     </div>
   );

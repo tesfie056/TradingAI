@@ -28,6 +28,7 @@ import {
   buildRecentActivity,
 } from "@/components/auto-trade/RecentAutoTradeActivity";
 import { AdvancedAutoTradeDetails } from "@/components/auto-trade/AdvancedAutoTradeDetails";
+import { OrderAutomationPipeline } from "@/components/auto-trade/OrderAutomationPipeline";
 
 type AutoTradeApi = AutoTradeStatus & {
   ok?: boolean;
@@ -262,6 +263,8 @@ export function AutoTradePageView() {
         title="Auto Trading"
         description="Start, stop, or run the automated paper-trading system."
       />
+
+      <OrderAutomationPipeline status={status} />
 
       <AutoTradeControlsPanel
         engine={engine}

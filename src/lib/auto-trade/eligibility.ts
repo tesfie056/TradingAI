@@ -93,7 +93,10 @@ export function evaluateAutoTradeEligibility(
 
   if (input.runtimeBlocked) {
     blockers.push(
-      blocker("runtime_disabled", "Auto trading runtime state is disabled."),
+      blocker(
+        "runtime_disabled",
+        "New entries are paused. Resume Engine from Auto Trading to allow paper-order submission.",
+      ),
     );
   }
 
@@ -151,9 +154,25 @@ export function evaluateAutoTradeEligibility(
     );
   }
 
-  if (!input.dataQuality.isMarketOpen || opp.marketStatus === "closed") {
+  if (
+    input.dataQuality.isMarketOpen == null ||
+    opp.marketStatus === "unavailable"
+  ) {
     blockers.push(
-      blocker("market_closed", "Auto trading blocked while the US equity market is closed."),
+      blocker(
+        "market_status_unavailable",
+        "Auto trading blocked — market status unavailable (broker clock could not be confirmed).",
+      ),
+    );
+  } else if (
+    input.dataQuality.isMarketOpen === false ||
+    opp.marketStatus === "closed"
+  ) {
+    blockers.push(
+      blocker(
+        "market_closed",
+        "Auto trading blocked while the US equity market is closed.",
+      ),
     );
   }
 

@@ -89,7 +89,8 @@ export type MarketClockStatus = {
 
 /** Phase 2.5 per-symbol data quality. */
 export type DataQuality = {
-  isMarketOpen: boolean;
+  /** null = broker clock unavailable (not the same as closed). */
+  isMarketOpen: boolean | null;
   isQuoteStale: boolean;
   spreadPercent: number | null;
   hasRecentBars: boolean;

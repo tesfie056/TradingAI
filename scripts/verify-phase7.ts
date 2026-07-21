@@ -163,12 +163,20 @@ async function main() {
     action: "BUY",
     readyForManualPaperTrade: true,
     tradeBlockReasons: [],
+    riskWarnings: [],
     dataQuality: {
       isMarketOpen: true,
       isQuoteStale: false,
       spreadPercent: 0.001,
       hasRecentBars: true,
       warningMessages: [],
+    },
+    explanation: {
+      technical: "Bullish lean",
+      news: "Neutral",
+      market: "Regular session open",
+      risk: "Acceptable",
+      summary: "BUY setup looks strong while the market is open",
     },
     scores: {
       technicalScore: 0.8,
@@ -182,7 +190,7 @@ async function main() {
   assert.equal(suggestMonitorAction(readyBuy), "BUY");
   const buyOpp = decisionToOpportunity(readyBuy)!;
   assert.equal(buyOpp.readyForPaperPreview, true);
-  console.log("✓ BUY opportunity ready for paper preview flag");
+  console.log("✓ BUY opportunity ready for Auto Trading handoff flag");
 
   const batch = decisionsToOpportunities([closedInteresting, readyBuy]);
   assert.ok(batch.length >= 2);

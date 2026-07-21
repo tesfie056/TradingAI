@@ -88,6 +88,7 @@ export type AutoTradeSkipCode =
   | "runtime_disabled"
   | "live_endpoint"
   | "market_closed"
+  | "market_status_unavailable"
   | "stale_quote"
   | "wide_spread"
   | "high_risk"

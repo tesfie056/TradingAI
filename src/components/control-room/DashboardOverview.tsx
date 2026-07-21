@@ -1,21 +1,31 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { useUiChrome } from "@/components/layout/UiChromeContext";
+import { useMonitorStream } from "@/components/layout/MonitorStreamContext";
 import { Panel } from "@/components/ui/Panel";
 import { ExpandableSection } from "@/components/ui/ExpandableSection";
 import { InfoTip } from "@/components/ui/InfoTip";
 import { StockSearch } from "@/components/stock/StockSearch";
+import { AutoTradingActivity } from "@/components/status/AutoTradingActivity";
+import { StatusReason } from "@/components/status/StatusReason";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { formatMoney, formatTime } from "@/lib/format";
 import { getLocalWatchlistSymbols } from "@/lib/client/ui-settings";
-import type { MonitorStatus } from "@/lib/monitor/types";
+import {
+  buildRuntimeActivity,
+  lastEvaluatedSymbolFromLogs,
+  plainOpportunitySummary,
+  resolveOverviewPrimaryBanner,
+  type RuntimeStatusInput,
+} from "@/lib/client/runtime-status-mapper";
 import type { AiDecision, MarketClockStatus } from "@/lib/alpaca/types";
 import type {
   AccountPayload,
   AiHealthPayload,
+  SafetyPayload,
 } from "@/lib/dashboard-types";
 import type { MarketCondition } from "@/lib/stocks/market-condition";
 
@@ -25,15 +35,18 @@ type AutoTradeSnap = {
   effectivelyEnabled?: boolean;
   envEnabled?: boolean;
   executionEnabled?: boolean;
+  runtimeDisabled?: boolean;
   engine?: {
     autoTradingEnabled?: boolean;
     executionEnabled?: boolean;
+    engineState?: string;
   };
   trader?: {
     equity?: number | null;
     dailyPnL?: number;
     openPositions?: { symbol: string; qty: number; unrealizedPl: number | null }[];
     marketOpen?: boolean | null;
+    nextScanAt?: string | null;
   };
   recentDecisions?: {
     id: string;
@@ -43,48 +56,6 @@ type AutoTradeSnap = {
     createdAt: string;
   }[];
 };
-
-function resolveOverviewStatus(input: {
-  marketOpen: boolean | null;
-  autoOn: boolean;
-  executionOn: boolean;
-  openCount: number;
-  dailyPnL: number | null;
-}): { message: string; detail: string; tone: "ok" | "warn" | "neutral" | "bad" } {
-  if (input.marketOpen === false) {
-    return {
-      message: "Market is closed",
-      detail: "You can review the watchlist and prepare for the next session.",
-      tone: "neutral",
-    };
-  }
-  if (!input.autoOn) {
-    return {
-      message: "Auto trading is off",
-      detail: "Turn automation on from Auto Trading when you want paper orders submitted automatically.",
-      tone: "warn",
-    };
-  }
-  if (!input.executionOn) {
-    return {
-      message: "Trade execution is off",
-      detail: "Automation is on, but paper order submission stays locked until execution is enabled.",
-      tone: "warn",
-    };
-  }
-  if (input.openCount > 0) {
-    return {
-      message: "A paper position is open",
-      detail: "Review Positions for entry, protection, and current profit or loss.",
-      tone: "ok",
-    };
-  }
-  return {
-    message: "Auto trading is ready",
-    detail: "The system is waiting for a valid setup.",
-    tone: "ok",
-  };
-}
 
 function toneClasses(tone: "ok" | "warn" | "neutral" | "bad"): string {
   if (tone === "ok") return "border-emerald-500/35 bg-emerald-500/10 text-emerald-50";
@@ -131,25 +102,27 @@ export function DashboardOverview({
 }) {
   const marketOpen = clock?.isOpen ?? null;
   const { openAi: _openAi } = useUiChrome();
-  const [monitor, setMonitor] = useState<MonitorStatus | null>(null);
+  const stream = useMonitorStream();
   const [auto, setAuto] = useState<AutoTradeSnap | null>(null);
+  const [safety, setSafety] = useState<SafetyPayload | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [mon, at] = await Promise.all([
-        fetchJson<MonitorStatus>("/api/monitor").catch(() => null),
+      const [at, saf] = await Promise.all([
         fetchJson<AutoTradeSnap>("/api/auto-trade").catch(() => null),
+        fetchJson<SafetyPayload>("/api/safety").catch(() => null),
       ]);
       if (cancelled) return;
-      setMonitor(mon);
       setAuto(at);
+      setSafety(saf);
     })();
     return () => {
       cancelled = true;
     };
   }, [loadedAt]);
 
+  const monitor = stream.status;
   const autoOn =
     auto?.engine?.autoTradingEnabled ??
     auto?.effectivelyEnabled ??
@@ -167,16 +140,71 @@ export function DashboardOverview({
   const best = [...decisions].sort(
     (a, b) => (b.confidence ?? 0) - (a.confidence ?? 0),
   )[0];
+  const topOpp = monitor?.topOpportunity ?? null;
 
-  const status = resolveOverviewStatus({
-    marketOpen: auto?.trader?.marketOpen ?? marketOpen,
+  const runtimeInput: RuntimeStatusInput = useMemo(() => {
+    const lastEval =
+      lastEvaluatedSymbolFromLogs(monitor?.recentLogs) ??
+      (monitor?.scanning ? monitor.scannedSymbols?.at(-1) ?? null : null);
+    return {
+      autoTradingEnabled: autoOn,
+      orderExecutionEnabled: executionOn,
+      marketOpen: auto?.trader?.marketOpen ?? stream.marketOpen ?? marketOpen,
+      monitorRunning: stream.workerRunning || Boolean(monitor?.running),
+      monitorScanning: stream.scanning || Boolean(monitor?.scanning),
+      monitorConnected: stream.connected,
+      lastScanAt: monitor?.lastScanAt ?? null,
+      nextScanAt:
+        monitor?.nextScanAt ?? auto?.trader?.nextScanAt ?? null,
+      stocksScanned: monitor?.stocksScanned ?? null,
+      scannedSymbolsCount: monitor?.scannedSymbols?.length ?? null,
+      watchlistSize: monitor?.scannedSymbols?.length ?? null,
+      lastError: monitor?.lastError ?? null,
+      heartbeatAt: stream.heartbeatAt ?? monitor?.heartbeatAt ?? null,
+      engineState: auto?.engine?.engineState ?? null,
+      runtimeDisabled: auto?.runtimeDisabled ?? null,
+      safetyOk: safety?.ok ?? true,
+      safetyLabel: safety?.ok
+        ? null
+        : (safety?.error?.slice(0, 80) ?? "Safety check failed"),
+      lastEvaluatedSymbol: lastEval,
+    };
+  }, [
     autoOn,
     executionOn,
-    openCount,
-    dailyPnL,
-  });
+    auto?.trader?.marketOpen,
+    auto?.trader?.nextScanAt,
+    auto?.engine?.engineState,
+    auto?.runtimeDisabled,
+    stream.marketOpen,
+    stream.workerRunning,
+    stream.scanning,
+    stream.connected,
+    stream.heartbeatAt,
+    marketOpen,
+    monitor,
+    safety?.ok,
+    safety?.error,
+  ]);
 
-  const activity = (auto?.recentDecisions ?? []).slice(0, 5);
+  const activity = buildRuntimeActivity(runtimeInput);
+  const status = resolveOverviewPrimaryBanner(activity);
+  const opportunity = topOpp
+    ? plainOpportunitySummary({
+        symbol: topOpp.symbol,
+        action: topOpp.action,
+        summary: topOpp.reason,
+      })
+    : best
+      ? plainOpportunitySummary({
+          symbol: best.symbol,
+          action: best.decisionLabel ?? best.action,
+          summary: best.explanation?.summary,
+          reasons: best.reasons,
+        })
+      : null;
+
+  const activityFeed = (auto?.recentDecisions ?? []).slice(0, 5);
 
   return (
     <div className="flex flex-col gap-5">
@@ -252,6 +280,11 @@ export function DashboardOverview({
         />
       </dl>
 
+      <AutoTradingActivity
+        input={runtimeInput}
+        opportunitiesFound={monitor?.opportunitiesFound ?? null}
+      />
+
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)] xl:items-start">
         <div className="flex min-w-0 flex-col gap-5">
           <Panel title="Status" className="shadow-sm shadow-black/20">
@@ -265,8 +298,12 @@ export function DashboardOverview({
               <p className="mt-1 text-sm opacity-90">{status.detail}</p>
             </div>
             <p className="mt-3 text-xs text-[var(--muted)]">
-              Updated {formatTime(loadedAt)}
-              {monitor?.running ? " · Monitor running" : ""}
+              Updated {formatTime(stream.heartbeatAt ?? loadedAt)}
+              {runtimeInput.monitorScanning
+                ? " · Scan in progress"
+                : runtimeInput.monitorRunning
+                  ? " · Monitor running"
+                  : ""}
             </p>
           </Panel>
 
@@ -308,16 +345,16 @@ export function DashboardOverview({
               <InfoTip text="Recent paper trading decisions and important events." />
             }
             summary={
-              activity.length > 0
-                ? `${activity.length} recent decision${activity.length === 1 ? "" : "s"}`
+              activityFeed.length > 0
+                ? `${activityFeed.length} recent decision${activityFeed.length === 1 ? "" : "s"}`
                 : "No recent activity yet."
             }
           >
-            {activity.length === 0 ? (
+            {activityFeed.length === 0 ? (
               <p className="text-sm text-[var(--muted)]">No recent decisions yet.</p>
             ) : (
               <ul className="space-y-2">
-                {activity.map((d) => (
+                {activityFeed.map((d) => (
                   <li
                     key={d.id}
                     className="border-b border-[var(--border)]/70 pb-2 text-sm last:border-0"
@@ -353,12 +390,12 @@ export function DashboardOverview({
               >
                 Run scan now
               </Link>
-              {best ? (
+              {(topOpp ?? best) ? (
                 <Link
-                  href={`/trade?symbol=${encodeURIComponent(best.symbol)}`}
+                  href={`/trade?symbol=${encodeURIComponent((topOpp ?? best)!.symbol)}`}
                   className="ui-btn w-full border border-amber-500/40 bg-amber-500/12 text-amber-50"
                 >
-                  Review {best.symbol}
+                  Review {(topOpp ?? best)!.symbol}
                 </Link>
               ) : null}
               {primary ? (
@@ -373,18 +410,21 @@ export function DashboardOverview({
           </Panel>
 
           <Panel title="Current opportunity">
-            {best ? (
+            {opportunity && (topOpp || best) ? (
               <div className="space-y-2 text-sm">
-                <p className="text-xl font-semibold tracking-tight">{best.symbol}</p>
+                <p className="text-xl font-semibold tracking-tight">
+                  {(topOpp ?? best)!.symbol}
+                </p>
                 <p className="text-[var(--muted)]">
-                  {(best.confidence * 100).toFixed(0)}% confidence ·{" "}
-                  {best.action}
+                  {(
+                    (topOpp?.confidence ?? best?.confidence ?? 0) * 100
+                  ).toFixed(0)}
+                  % confidence · {(topOpp?.action ?? best?.action) ?? "—"}
                 </p>
-                <p className="text-zinc-200">
-                  {best.explanation?.summary ??
-                    best.reasons[0] ??
-                    "No summary yet."}
-                </p>
+                <StatusReason
+                  reason={`${opportunity.headline}. ${opportunity.detail}`}
+                  technical={opportunity.technical}
+                />
               </div>
             ) : (
               <p className="text-sm text-[var(--muted)]">

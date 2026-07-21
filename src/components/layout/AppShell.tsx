@@ -21,6 +21,7 @@ import { SystemStatusPanel } from "@/components/status/SystemStatusPanel";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { aiStatusDisplayLabel } from "@/lib/client/block-reasons";
 import { buildSystemStatusItems } from "@/lib/client/status-state-mapper";
+import { lastEvaluatedSymbolFromLogs } from "@/lib/client/runtime-status-mapper";
 import type {
   AiHealthPayload,
   NewsPayload,
@@ -37,6 +38,8 @@ type ShellStatus = {
   safetyOk: boolean;
   safetyLabel: string;
   brokerConnected: boolean | null;
+  engineState: string | null;
+  runtimeDisabled: boolean | null;
   checkedAt: string | null;
 };
 
@@ -49,6 +52,8 @@ const FALLBACK: ShellStatus = {
   safetyOk: false,
   safetyLabel: "checking",
   brokerConnected: null,
+  engineState: null,
+  runtimeDisabled: null,
   checkedAt: null,
 };
 
@@ -80,9 +85,11 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
         fetchJson<{
           effectivelyEnabled?: boolean;
           envEnabled?: boolean;
+          runtimeDisabled?: boolean;
           engine?: {
             autoTradingEnabled?: boolean;
             executionEnabled?: boolean;
+            engineState?: string;
           };
           trader?: { alpacaConnected?: boolean };
         }>("/api/auto-trade").catch(() => null),
@@ -108,6 +115,8 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
           ? (safety.tradingEndpoint?.replace("https://", "") ?? "paper-api")
           : (safety?.error?.slice(0, 40) ?? "fail"),
         brokerConnected: autoTrade?.trader?.alpacaConnected ?? null,
+        engineState: autoTrade?.engine?.engineState ?? null,
+        runtimeDisabled: autoTrade?.runtimeDisabled ?? null,
         checkedAt: new Date().toISOString(),
       });
     } catch {
@@ -149,8 +158,14 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
       brokerConnected: status.brokerConnected,
       monitorLastError: monitor.status?.lastError ?? null,
       monitorLastScanAt: monitor.status?.lastScanAt ?? null,
+      monitorNextScanAt: monitor.status?.nextScanAt ?? null,
       monitorStocksScanned: monitor.status?.stocksScanned ?? null,
       monitorOllamaAvailable: monitor.status?.ollamaAvailable ?? null,
+      engineState: status.engineState,
+      runtimeDisabled: status.runtimeDisabled,
+      lastEvaluatedSymbol: lastEvaluatedSymbolFromLogs(
+        monitor.status?.recentLogs,
+      ),
       checkedAt: status.checkedAt,
     }),
     [
@@ -163,8 +178,10 @@ function AppShellInner({ children }: { children: React.ReactNode }) {
       monitor.scanning,
       monitor.status?.lastError,
       monitor.status?.lastScanAt,
+      monitor.status?.nextScanAt,
       monitor.status?.stocksScanned,
       monitor.status?.ollamaAvailable,
+      monitor.status?.recentLogs,
     ],
   );
 

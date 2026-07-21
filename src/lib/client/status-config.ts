@@ -10,6 +10,8 @@ export type StatusKey =
   | "data"
   | "market"
   | "monitor"
+  | "scan"
+  | "engine"
   | "execution"
   | "auto"
   | "ai"
@@ -23,6 +25,8 @@ export const STATUS_ORDER: StatusKey[] = [
   "data",
   "market",
   "monitor",
+  "scan",
+  "engine",
   "execution",
   "auto",
   "ai",
@@ -35,17 +39,19 @@ export const TABLET_PRIORITY: StatusKey[] = [
   "broker",
   "market",
   "monitor",
-  "execution",
+  "scan",
+  "engine",
   "auto",
   "errors",
 ];
 
-/** Mobile strip: only these (+ overflow for the rest). */
+/** Mobile strip: only these (+ critical). */
 export const MOBILE_PRIORITY: StatusKey[] = [
   "safety",
   "broker",
   "market",
   "auto",
+  "engine",
   "errors",
 ];
 
@@ -56,6 +62,8 @@ export const STATUS_LABELS: Record<StatusKey, string> = {
   data: "Data",
   market: "Market",
   monitor: "Monitor",
+  scan: "Scan",
+  engine: "Engine",
   execution: "Paper execution",
   auto: "Auto trading",
   ai: "AI assistant",
@@ -76,6 +84,8 @@ export const STATUS_HREF: Partial<Record<StatusKey, StatusHref>> = {
   execution: "/auto-trade",
   monitor: "/monitor",
   agent: "/monitor",
+  scan: "/monitor",
+  engine: "/auto-trade",
   errors: "/logs",
   ai: "/settings",
 };

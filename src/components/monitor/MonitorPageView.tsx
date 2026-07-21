@@ -8,7 +8,7 @@ export function MonitorPageView() {
     <div className="flex flex-col gap-5">
       <PageHeader
         title="Advanced monitoring"
-        description="Watchlist scanner for U.S. stocks. Finds setups only — never places orders."
+        description="Scans the watchlist and sends eligible setups to Auto Trading."
       />
       <MonitoringPanel />
     </div>

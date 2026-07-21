@@ -59,12 +59,6 @@ export function decisionToOpportunity(
       ? decision.tradeBlockReasons
       : decision.riskWarnings?.slice(0, 4) ?? [];
 
-  const marketStatus: MonitorOpportunity["marketStatus"] = decision.dataQuality
-    ? decision.dataQuality.isMarketOpen
-      ? "open"
-      : "closed"
-    : "unknown";
-
   const newsSummary =
     decision.newsContext?.explanation ??
     decision.explanation?.news ??
@@ -75,9 +69,48 @@ export function decisionToOpportunity(
     decision.reasons?.[0] ??
     `${action} signal for ${decision.symbol}`;
 
+  // Alpaca/dataQuality is source of truth. Free-text must never override an open clock.
+  const dqOpen = decision.dataQuality?.isMarketOpen;
+  const marketClosed = dqOpen === false;
+  const marketUnavailable = dqOpen === null || dqOpen === undefined;
+  const marketStatus: MonitorOpportunity["marketStatus"] =
+    dqOpen === true
+      ? "open"
+      : dqOpen === false
+        ? "closed"
+        : dqOpen === null
+          ? "unavailable"
+          : "unknown";
+
+  // Signal-ready is not executable while closed or clock unavailable.
   const ready =
     Boolean(decision.readyForManualPaperTrade) &&
-    (action === "BUY" || action === "SELL");
+    (action === "BUY" || action === "SELL") &&
+    !marketClosed &&
+    !marketUnavailable;
+
+  const blockedReasons = [...blocked];
+  if (
+    marketUnavailable &&
+    !blockedReasons.some((b) => /market status unavailable/i.test(b))
+  ) {
+    blockedReasons.unshift(
+      "Market status unavailable — broker clock could not be confirmed",
+    );
+  } else if (
+    marketClosed &&
+    !blockedReasons.some((b) => /market closed/i.test(b))
+  ) {
+    blockedReasons.unshift("Market closed — waiting for regular session");
+  }
+  // Drop stale "market closed" blockers when the broker clock says open.
+  const cleanedBlocked =
+    dqOpen === true
+      ? blockedReasons.filter(
+          (b) =>
+            !/market closed|market is closed|market status unavailable/i.test(b),
+        )
+      : blockedReasons;
 
   return {
     id: newId(decision.symbol),
@@ -95,7 +128,7 @@ export function decisionToOpportunity(
     newsScore: Number((decision.scores?.newsScore ?? 0.5).toFixed(3)),
     marketScore: Number((decision.scores?.marketScore ?? 0.5).toFixed(3)),
     riskScore: Number((decision.scores?.riskScore ?? 0.5).toFixed(3)),
-    blockedReasons: blocked.slice(0, 6),
+    blockedReasons: cleanedBlocked.slice(0, 6),
     readyForPaperPreview: ready,
     ollamaUsed: Boolean(extras?.ollamaUsed),
   };

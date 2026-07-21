@@ -502,6 +502,118 @@ export async function scenarioZeroEligibleBlocksAuto() {
   return { gates };
 }
 
+/**
+ * Scenario K — unattended overnight → next regular session morning.
+ * Market closed → before open → open but delay → after delay + eligible signal.
+ * Confirms opening-delay, single place, no duplicate on next scan, accepted≠filled.
+ */
+export async function scenarioMorningUnattendedResume() {
+  const clock = new FakeClock("2026-07-16T12:00:00.000Z"); // ~08:00 ET pre-open
+  const broker = new FakeAlpacaBroker({}, clock.nowMs());
+
+  // Night / closed: no entry
+  const closed = openGates({
+    marketOpen: false,
+    minutesSinceOpen: null,
+    minutesToClose: null,
+    executionEnabled: true,
+    autoTradingEnabled: true,
+    emergencyStopActive: false,
+  });
+  assert.equal(closed.ok, false);
+  assert.ok(closed.blockers.some((b) => b.code === "market_closed"));
+
+  // Just after open, still inside opening delay
+  clock.advanceMinutes(120);
+  const delayed = openGates({
+    marketOpen: true,
+    minutesSinceOpen: 5,
+    minutesToClose: 385,
+    openEntryDelayMinutes: 15,
+    executionEnabled: true,
+    autoTradingEnabled: true,
+  });
+  assert.equal(delayed.ok, false);
+  assert.ok(delayed.blockers.some((b) => b.code === "open_delay"));
+
+  // Zero-eligible morning: delay passed, no BUY signal
+  const zero = openGates({
+    marketOpen: true,
+    minutesSinceOpen: 30,
+    minutesToClose: 360,
+    openEntryDelayMinutes: 15,
+    strategyIsBuy: false,
+    universeEligible: true,
+  });
+  assert.equal(zero.ok, false);
+
+  // Eligible signal after delay — exactly one bracket workflow
+  const ready = openGates({
+    marketOpen: true,
+    minutesSinceOpen: 30,
+    minutesToClose: 360,
+    openEntryDelayMinutes: 15,
+    strategyIsBuy: true,
+    executionEnabled: true,
+    autoTradingEnabled: true,
+  });
+  assert.equal(ready.ok, true);
+
+  let trade = makeCandidate({
+    symbol: "F",
+    qty: 2,
+    entry: 20,
+    stop: 19.7,
+    take: 20.6,
+  });
+  await upsertV1LifecycleTrade(trade);
+  const placed = await submitV1BracketEntry({
+    trade,
+    ...placeViaBroker(broker),
+  });
+  assert.equal(placed.ok, true);
+  if (!placed.ok) throw new Error("place failed");
+  trade = placed.trade;
+  assert.ok(trade.filledEntryQty === 0 || trade.filledEntryQty == null);
+  assert.notEqual(trade.lifecycleState, "COMPLETED");
+  assert.equal(
+    broker.mutations.filter((m) => m.kind === "place_order").length,
+    1,
+  );
+
+  // Next scan must not duplicate while pending/open position exists
+  const nextScan = openGates({
+    marketOpen: true,
+    minutesSinceOpen: 32,
+    minutesToClose: 358,
+    hasPendingEntry: true,
+    hasOpenPosition: false,
+  });
+  assert.equal(nextScan.ok, false);
+
+  // Restart mid-workflow: restore + sync; still one place
+  await upsertV1LifecycleTrade(trade);
+  const store = await readV1LifecycleStore();
+  const restored = store.trades.find((t) => t.tradeId === trade.tradeId);
+  assert.ok(restored);
+  const synced = syncTradeFromBroker(restored!, broker.snapshot());
+  assert.equal(
+    broker.mutations.filter((m) => m.kind === "place_order").length,
+    1,
+  );
+  assert.ok((synced.filledEntryQty ?? 0) === 0);
+
+  // Max-position / existing-symbol protection
+  const maxPos = openGates({
+    marketOpen: true,
+    minutesSinceOpen: 40,
+    maxOpenPositionsReached: true,
+  });
+  assert.equal(maxPos.ok, false);
+
+  return { closed, delayed, zero, ready, trade: synced, places: 1 };
+}
+
 /** Scenario J — AAPL legacy short conflict; other symbol ok */
 export async function scenarioLegacyShortConflict() {
   const aapl = mockPosition({ symbol: "AAPL", qty: -2 });

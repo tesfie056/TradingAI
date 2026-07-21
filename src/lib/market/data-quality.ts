@@ -19,7 +19,7 @@ export const WIDE_SPREAD_WARN_PCT = 0.005;
 
 export function isQuoteStale(
   quoteTimestamp: string | null | undefined,
-  isMarketOpen: boolean,
+  isMarketOpen: boolean | null,
   nowMs: number = Date.now(),
 ): boolean {
   if (!quoteTimestamp) return true;
@@ -30,12 +30,11 @@ export function isQuoteStale(
   if (age < 0) return false;
 
   // During RTH, quotes should be fresh.
-  if (isMarketOpen) {
+  if (isMarketOpen === true) {
     return age > STALE_QUOTE_MS_WHEN_OPEN;
   }
 
-  // When closed, any quote is effectively stale vs live session —
-  // treat as stale for decision aggressiveness.
+  // Closed or clock unavailable — treat as stale for decision aggressiveness.
   return true;
 }
 
@@ -66,7 +65,7 @@ export function computeSpreadPercent(
  * Pure function — safe to unit-test without network.
  */
 export function assessDataQuality(input: {
-  isMarketOpen: boolean;
+  isMarketOpen: boolean | null;
   quote: AlpacaQuote | undefined;
   bars: AlpacaBar[];
   nowMs?: number;
@@ -84,16 +83,24 @@ export function assessDataQuality(input: {
   const recentBars = hasRecentBars(input.bars, nowMs);
   const warningMessages: string[] = [];
 
-  if (!input.isMarketOpen) {
+  if (input.isMarketOpen === null) {
+    warningMessages.push(
+      "Market status unavailable — broker clock could not be confirmed.",
+    );
+  } else if (input.isMarketOpen === false) {
     warningMessages.push(
       "US equity market is closed — quotes may be after-hours or last regular session.",
     );
   }
 
   if (quoteStale) {
-    if (input.isMarketOpen) {
+    if (input.isMarketOpen === true) {
       warningMessages.push(
         `Quote is stale (>${STALE_QUOTE_MS_WHEN_OPEN / 60_000}m old during open session).`,
+      );
+    } else if (input.isMarketOpen === null) {
+      warningMessages.push(
+        "Quote freshness not reliable while market status is unavailable.",
       );
     } else {
       warningMessages.push(

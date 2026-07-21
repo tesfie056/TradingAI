@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Panel } from "@/components/ui/Panel";
 import { formatTime } from "@/lib/format";
@@ -31,16 +31,23 @@ function fmtPct(n: number): string {
 export function AdvancedAutoTradeDetails({
   status,
   orders,
+  engineNotes = [],
+  legacySection,
+  children,
 }: {
   status: AutoTradeStatus | null;
   orders: TradeRow[];
+  engineNotes?: string[];
+  legacySection?: ReactNode;
+  children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const t = status?.trader;
 
   return (
+    <div id="advanced-auto-trade-details" className="scroll-mt-4">
     <Panel
-      title="Advanced details"
+      title="Advanced Details"
       action={
         <button
           type="button"
@@ -57,8 +64,31 @@ export function AdvancedAutoTradeDetails({
         deeper detail.
       </p>
 
-      {!open ? null : (
-        <div className="mt-4 space-y-6">
+      <div
+        className={open ? "mt-4 space-y-6" : "hidden"}
+        aria-hidden={!open}
+      >
+          {children}
+          {legacySection ? (
+            <section>
+              <h3 className="mb-2 text-sm font-semibold text-zinc-200">
+                Legacy or external positions
+              </h3>
+              {legacySection}
+            </section>
+          ) : null}
+          {engineNotes.length > 0 ? (
+            <section>
+              <h3 className="mb-2 text-sm font-semibold text-zinc-200">
+                Additional engine notes
+              </h3>
+              <ul className="space-y-1 text-sm text-zinc-300">
+                {engineNotes.map((r) => (
+                  <li key={r}>{r}</li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
           <section>
             <h3 className="mb-2 text-sm font-semibold text-zinc-200">
               Reconciliation & risk snapshot
@@ -292,9 +322,9 @@ export function AdvancedAutoTradeDetails({
 
           <V1StrategyDecisionsPanel />
           <V1LifecyclePanel />
-        </div>
-      )}
+      </div>
     </Panel>
+    </div>
   );
 }
 

@@ -38,7 +38,9 @@ export function deriveEngineControlSnapshot(input: {
   if (panicStop) blockingReasons.push("Emergency stop is active");
   if (killSwitch) blockingReasons.push("Kill switch is active");
   if (runtimeDisabled && !killSwitch && !panicStop) {
-    blockingReasons.push("Engine is paused");
+    blockingReasons.push(
+      "New entries are paused. Resume Engine from Auto Trading to allow scans and proposals.",
+    );
   }
   if (!executionEnabled) blockingReasons.push("Paper execution is OFF");
   if (!autoTradingEnabled) blockingReasons.push("Auto trading is OFF");
@@ -48,6 +50,9 @@ export function deriveEngineControlSnapshot(input: {
     );
   }
   if (marketOpen === false) blockingReasons.push("Market is closed");
+  if (marketOpen === null) {
+    blockingReasons.push("Market status unavailable");
+  }
 
   const canScan =
     !panicStop && !killSwitch && !runtimeDisabled && monitorRunning;

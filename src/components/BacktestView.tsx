@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { Panel } from "@/components/ui/Panel";
 import { ActionBadge } from "@/components/ui/badges";
+import { AdvancedDetails } from "@/components/ui/AdvancedDetails";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
-import { SafetyStrip } from "@/components/ui/SafetyStrip";
+import { ExpandableSection } from "@/components/ui/ExpandableSection";
+import { InfoTip } from "@/components/ui/InfoTip";
+import { SummaryMetric } from "@/components/ui/SummaryMetric";
 import { ScrollTable } from "@/components/ui/ScrollTable";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { formatTime } from "@/lib/format";
@@ -74,22 +77,20 @@ export function BacktestView() {
 
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="h1">Backtest</h1>
-        <p className="mt-2 text-base text-[var(--muted)]">
-          Replay stock decision logic on historical 5-minute bars. Never places
-          orders.
-        </p>
-      </div>
+      <PageHeader
+        title="Backtest"
+        description="Run a historical paper simulation for research."
+      />
 
-      <SafetyStrip orderExecutionEnabled={false} />
-
-      <PaperOnlyBanner detail="simulation never places orders" />
-
-      <Panel title="Run parameters">
+      <Panel
+        title="Run Backtest"
+        action={
+          <InfoTip text="Historical simulation only. Never places orders. Backtest and paper results do not guarantee future profit." />
+        }
+      >
         <div className="flex flex-wrap items-end gap-3 text-sm">
           <label className="flex min-w-[8rem] flex-1 flex-col gap-1 sm:flex-none">
-            <span className="text-xs text-[var(--muted)] uppercase">Symbol</span>
+            <span className="text-xs text-[var(--muted)] uppercase">Stocks</span>
             <select
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
@@ -130,13 +131,9 @@ export function BacktestView() {
             onClick={() => void run()}
             className="border border-amber-500/50 bg-amber-500/15 px-3 py-1.5 text-amber-50 disabled:opacity-50"
           >
-            {busy ? "Running…" : "Run backtest"}
+            {busy ? "Running…" : "Run Backtest"}
           </button>
         </div>
-        <p className="mt-2 text-xs text-[var(--muted)]">
-          Date range filters available bars from Alpaca IEX history. Leave blank
-          to use the recent lookback window.
-        </p>
       </Panel>
 
       {error && (
@@ -149,68 +146,45 @@ export function BacktestView() {
         <EmptyState title="No backtest results yet">
           <p>
             Choose a U.S. stock symbol (and optional date range), then click Run
-            backtest. Results are paper simulation only.
+            Backtest. Results are paper simulation only.
           </p>
         </EmptyState>
       )}
 
       {result && s && (
         <>
-          <div className="grid gap-3 grid-cols-2 lg:grid-cols-5 text-sm">
-            <Panel>
-              <div className="text-xs uppercase text-[var(--muted)]">
-                Win rate
-              </div>
-              <div className="mt-1 text-xl font-semibold tabular-nums">
-                {s.winRate == null ? "—" : `${(s.winRate * 100).toFixed(0)}%`}
-              </div>
-            </Panel>
-            <Panel>
-              <div className="text-xs uppercase text-[var(--muted)]">
-                Est. P/L
-              </div>
-              <div className="mt-1 text-xl font-semibold tabular-nums">
-                {s.estimatedPnlPctTotal == null
+          <dl className="grid gap-3 grid-cols-2 lg:grid-cols-4 text-sm">
+            <SummaryMetric
+              label="Est. P/L"
+              value={
+                s.estimatedPnlPctTotal == null
                   ? "—"
-                  : `${(s.estimatedPnlPctTotal * 100).toFixed(2)}%`}
-              </div>
-            </Panel>
-            <Panel>
-              <div className="text-xs uppercase text-[var(--muted)]">
-                Max drawdown
-              </div>
-              <div className="mt-1 text-xl font-semibold tabular-nums">
-                {s.maxDrawdownPct == null
+                  : `${(s.estimatedPnlPctTotal * 100).toFixed(2)}%`
+              }
+            />
+            <SummaryMetric label="# Trades" value={String(s.tradeCount)} />
+            <SummaryMetric
+              label="Win rate"
+              value={
+                s.winRate == null ? "—" : `${(s.winRate * 100).toFixed(0)}%`
+              }
+            />
+            <SummaryMetric
+              label="Max drawdown"
+              value={
+                s.maxDrawdownPct == null
                   ? "—"
-                  : `${(s.maxDrawdownPct * 100).toFixed(2)}%`}
-              </div>
-            </Panel>
-            <Panel>
-              <div className="text-xs uppercase text-[var(--muted)]">
-                # Trades
-              </div>
-              <div className="mt-1 text-xl font-semibold tabular-nums">
-                {s.tradeCount}
-              </div>
-            </Panel>
-            <Panel className="col-span-2 lg:col-span-1">
-              <div className="text-xs uppercase text-[var(--muted)]">
-                Accuracy
-              </div>
-              <div className="mt-1 text-xl font-semibold tabular-nums">
-                {s.accuracy == null ? "—" : `${(s.accuracy * 100).toFixed(0)}%`}
-              </div>
-            </Panel>
-          </div>
+                  : `${(s.maxDrawdownPct * 100).toFixed(2)}%`
+              }
+            />
+          </dl>
 
-          <Panel title={`Simulated decisions (${result.symbols.join(", ")})`}>
-            <p className="mb-2 text-xs text-[var(--muted)]">
-              Bars used {result.barsUsed} · BUY {s.buy} · SELL {s.sell} · HOLD{" "}
-              {s.hold}
-              {result.startDate || result.endDate
-                ? ` · window ${result.startDate ?? "…"} → ${result.endDate ?? "…"}`
-                : ""}
-            </p>
+          <ExpandableSection
+            title="Trade list"
+            expandLabel="View trade list"
+            collapseLabel="Hide trade list"
+            summary={`Simulated decisions for ${result.symbols.join(", ")} · ${result.barsUsed} bars`}
+          >
             {result.decisions.length === 0 ? (
               <EmptyState title="No backtest results yet">
                 <p>
@@ -222,11 +196,11 @@ export function BacktestView() {
               <ScrollTable minWidthClass="min-w-[32rem] sm:min-w-[40rem]">
                 <table className="w-full text-left text-sm">
                   <thead>
-                    <tr className="border-b border-[var(--border)] text-xs text-[var(--muted)] uppercase">
+                    <tr className="border-b border-[var(--border)] text-xs uppercase text-[var(--muted)]">
                       <th className="py-2 pr-3 font-medium">Time</th>
                       <th className="py-2 pr-3 font-medium">Action</th>
                       <th className="py-2 pr-3 font-medium">Price</th>
-                      <th className="py-2 pr-3 font-medium">Conf.</th>
+                      <th className="py-2 pr-3 font-medium">Confidence</th>
                       <th className="py-2 font-medium">Est. P/L</th>
                     </tr>
                   </thead>
@@ -236,7 +210,7 @@ export function BacktestView() {
                         key={`${d.symbol}-${d.timestamp}-${i}`}
                         className="border-b border-[var(--border)]/50"
                       >
-                        <td className="py-2 pr-3 text-[var(--muted)] whitespace-nowrap">
+                        <td className="whitespace-nowrap py-2 pr-3 text-[var(--muted)]">
                           {formatTime(d.timestamp)}
                         </td>
                         <td className="py-2 pr-3">
@@ -259,7 +233,24 @@ export function BacktestView() {
                 </table>
               </ScrollTable>
             )}
-          </Panel>
+          </ExpandableSection>
+
+          <AdvancedDetails
+            title="Technical details"
+            summary="Bars used, action mix, accuracy, and window metadata."
+          >
+            <p className="text-sm text-[var(--muted)]">
+              Bars used {result.barsUsed} · Buy {s.buy} · Sell {s.sell} · Hold{" "}
+              {s.hold}
+              {result.startDate || result.endDate
+                ? ` · window ${result.startDate ?? "…"} → ${result.endDate ?? "…"}`
+                : ""}
+            </p>
+            <p className="mt-2 text-sm text-zinc-200">
+              Accuracy:{" "}
+              {s.accuracy == null ? "—" : `${(s.accuracy * 100).toFixed(0)}%`}
+            </p>
+          </AdvancedDetails>
         </>
       )}
     </div>

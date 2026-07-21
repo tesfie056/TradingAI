@@ -1,6 +1,8 @@
 /**
  * Runtime settings service verification (paper only).
  * Run: npm run verify:runtime-settings
+ *
+ * Uses TRADINGAI_DATA_DIR isolation — never mutates production data/.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -18,10 +20,13 @@ import {
   validateRuntimeSettingsPatch,
   readSettingsAudit,
 } from "../src/lib/auto-trade/runtime-settings";
+import { withTempTradingData } from "./lib/v1-harness/temp-data";
 
 async function main() {
   console.log("verify:runtime-settings starting…");
-
+  const temp = await withTempTradingData();
+  let failed = false;
+  try {
   await resetRuntimeSettingsCacheForTests();
   const defaults = buildRuntimeSettingsFromEnv();
   assert.equal(defaults.paperOnly, true);
@@ -192,6 +197,13 @@ async function main() {
 
   await resetRuntimeSettings({ actor: "test", reason: "verify_cleanup" });
   console.log("verify:runtime-settings passed");
+  } catch (err) {
+    failed = true;
+    throw err;
+  } finally {
+    await resetRuntimeSettingsCacheForTests();
+    await temp.cleanup({ failed });
+  }
 }
 
 main().catch((err) => {

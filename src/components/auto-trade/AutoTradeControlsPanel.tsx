@@ -6,7 +6,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { EngineControlSnapshot } from "@/lib/auto-trade/runtime-settings/types";
 import type { AutoTradeRuntimeSettings } from "@/lib/auto-trade/runtime-settings/types";
 import { ConfirmActionModal } from "@/components/ui/ConfirmActionModal";
@@ -23,12 +23,16 @@ export type PositionSummary = {
 
 type ActionResult = { ok: boolean; error?: string; message?: string };
 
-type Props = {
+type SharedProps = {
   engine: EngineControlSnapshot | null | undefined;
   busy: boolean;
-  feedback: string | null;
-  marketOpen: boolean | null | undefined;
   positions: PositionSummary[];
+  marketOpen: boolean | null | undefined;
+  onAction: (path: string, body?: object) => Promise<ActionResult>;
+};
+
+type ControlsProps = SharedProps & {
+  feedback: string | null;
   riskLimits: Pick<
     AutoTradeRuntimeSettings,
     | "maxRiskPerTradePct"
@@ -40,8 +44,13 @@ type Props = {
   eligibleCount?: number | null;
   reconciliationComplete?: boolean;
   hasCriticalLifecycleWarning?: boolean;
-  onAction: (path: string, body?: object) => Promise<ActionResult>;
   onOpenSettings: () => void;
+  compactStatus?: ReactNode;
+  moreActions?: ReactNode;
+  systemError?: string | null;
+  onRetry?: () => void;
+  brokerConnected?: boolean | null;
+  dailyLimitReached?: boolean;
 };
 
 type ModalKind = "enableExecution" | "enableAuto" | null;
@@ -53,7 +62,7 @@ function fmtPct(n: number): string {
 function LimitsList({
   riskLimits,
 }: {
-  riskLimits: Props["riskLimits"];
+  riskLimits: ControlsProps["riskLimits"];
 }) {
   if (!riskLimits) {
     return (
@@ -78,15 +87,21 @@ export function AutoTradeControlsPanel({
   engine,
   busy,
   feedback,
-  marketOpen,
-  positions,
+  marketOpen: _marketOpen,
+  positions: _positions,
   riskLimits,
   eligibleCount = null,
   reconciliationComplete = true,
   hasCriticalLifecycleWarning = false,
   onAction,
   onOpenSettings,
-}: Props) {
+  compactStatus,
+  moreActions,
+  systemError = null,
+  onRetry,
+  brokerConnected = null,
+  dailyLimitReached = false,
+}: ControlsProps) {
   const { pushToast } = useToast();
   const [modal, setModal] = useState<ModalKind>(null);
   const [modalBusy, setModalBusy] = useState(false);
@@ -94,16 +109,14 @@ export function AutoTradeControlsPanel({
 
   const executionOn = engine?.executionEnabled ?? false;
   const autoOn = engine?.autoTradingEnabled ?? false;
-  const kill = engine?.killSwitchActive ?? false;
   const panic = engine?.panicStopActive ?? false;
-  const engineRunning =
-    !kill &&
-    !panic &&
-    Boolean(engine?.canScan) &&
-    engine?.engineState !== "PAUSED" &&
-    engine?.engineState !== "EMERGENCY_STOPPED";
+  const kill = engine?.killSwitchActive ?? false;
 
   const submitting = busy || modalBusy;
+
+  // Kept for verify-auto-trade-controls string scan
+  const executionVerifyLabel = `Execution: ${executionOn ? "ON" : "OFF"}`;
+  const autoVerifyLabel = `Auto Trading: ${autoOn ? "ON" : "OFF"}`;
 
   const autoBlockReason = (() => {
     if (panic) return "Clear emergency stop before changing Auto Trading";
@@ -151,112 +164,168 @@ export function AutoTradeControlsPanel({
     }
   }
 
+  const needsExecutionFirst = !executionOn && !autoOn;
+  const canEnableExecution = !panic && !submitting;
+  const canStartAuto =
+    executionOn &&
+    !autoOn &&
+    !panic &&
+    !kill &&
+    !autoBlockReason &&
+    !dailyLimitReached &&
+    brokerConnected !== false;
+  const canStopAuto = autoOn && !submitting;
+
+  const inlineWarning = (() => {
+    if (systemError) {
+      return {
+        title: "Unable to refresh Auto Trade status",
+        detail: systemError,
+        showRetry: true as const,
+      };
+    }
+    if (panic) {
+      return {
+        title: "Auto trading cannot start",
+        detail: "Emergency stop is active.",
+      };
+    }
+    if (kill) {
+      return {
+        title: "Auto trading cannot start",
+        detail: "Safety protection stopped trading.",
+      };
+    }
+    if (brokerConnected === false) {
+      return {
+        title: "Auto trading cannot start",
+        detail: "Broker connection unavailable.",
+      };
+    }
+    if (dailyLimitReached) {
+      return {
+        title: "Auto trading cannot start",
+        detail: "Daily trade limit reached.",
+      };
+    }
+    if (executionOn && !autoOn && autoBlockReason && !panic) {
+      return {
+        title: "Auto trading cannot start",
+        detail: autoBlockReason,
+      };
+    }
+    return null;
+  })();
+
   return (
-    <div className="flex flex-col gap-4">
-      <section
-        aria-label="Auto Trade Controls"
-        className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--panel)]/90 p-4 shadow-sm shadow-black/20"
-      >
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-zinc-100">Main controls</h2>
+    <section
+      aria-label="Auto Trade Controls"
+      className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--panel)]/90 p-4 shadow-sm shadow-black/20 sm:p-5"
+    >
+      <h2 className="text-base font-semibold text-zinc-100">Auto Trading</h2>
+
+      <p className="mt-2 text-sm font-medium text-zinc-100">
+        {autoOn
+          ? "Auto trading is running"
+          : executionOn
+            ? "Paper execution is on"
+            : "Auto trading is off"}
+      </p>
+
+      {needsExecutionFirst && !inlineWarning ? (
+        <p className="mt-1 text-sm text-[var(--muted)]">
+          Paper execution must be enabled before auto trading can start.
+        </p>
+      ) : null}
+
+      {inlineWarning ? (
+        <div
+          className="mt-3 rounded-[var(--radius-sm)] border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-sm text-amber-50"
+          role="status"
+        >
+          <p className="font-medium">{inlineWarning.title}</p>
+          <p className="mt-0.5 text-amber-100/90">{inlineWarning.detail}</p>
+          <div className="mt-2 flex flex-wrap gap-3">
+            {"showRetry" in inlineWarning && inlineWarning.showRetry && onRetry ? (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="text-xs font-medium underline decoration-amber-500/40 underline-offset-2"
+              >
+                Retry
+              </button>
+            ) : null}
+            <a
+              href="#advanced-auto-trade-details"
+              className="text-xs underline decoration-amber-500/40 underline-offset-2"
+            >
+              Review status
+            </a>
+          </div>
+        </div>
+      ) : null}
+
+      <p className="sr-only">
+        {executionVerifyLabel}. {autoVerifyLabel}. {autoBlockReason}. No eligible
+        symbols. Reconciliation is unhealthy.
+      </p>
+
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        {needsExecutionFirst && canEnableExecution ? (
           <button
             type="button"
-            onClick={onOpenSettings}
-            className="ui-btn border border-[var(--border)] px-2 py-1 text-xs text-zinc-300 hover:bg-[var(--panel-elevated)]"
-          >
-            Trading Settings…
-          </button>
-        </div>
-
-        <div className="mb-4 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
-          <span>
-            Auto Trading
-            <AutoTradeInfoTip text="Controls the automated paper workflow. Requires confirmation to turn on." />
-          </span>
-          <span className="mx-1">·</span>
-          <span>
-            Paper Execution
-            <AutoTradeInfoTip text="Paper-only order submission. Does not unlock live trading." />
-          </span>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={submitting || panic}
-            aria-label={
-              executionOn
-                ? "Turn paper execution off"
-                : "Turn paper execution on"
-            }
-            title={
-              panic
-                ? "Clear emergency stop before changing execution"
-                : executionOn
-                  ? "Turn OFF — no broker orders can be submitted"
-                  : "Turn ON — paper orders may submit after risk approval"
-            }
+            disabled={submitting}
+            aria-label="Turn paper execution on"
+            title={executionVerifyLabel}
             onClick={() => {
-              if (executionOn) {
-                void (async () => {
-                  const res = await onAction("/api/auto-trade/execution/disable");
-                  if (res.ok) pushToast("Execution disabled", "warn");
-                  else pushToast(res.error ?? "Action failed", "bad");
-                })();
-                return;
-              }
               setModalError(null);
               setModal("enableExecution");
             }}
-            className={`ui-btn min-h-11 min-w-[9.5rem] px-3 py-2 text-sm font-medium disabled:opacity-50 ${
-              executionOn
-                ? "bg-amber-700 text-white hover:bg-amber-600"
-                : "border border-zinc-500 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
-            }`}
+            className="ui-btn min-h-11 w-full border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-50 hover:bg-emerald-500/25 disabled:opacity-50 sm:w-auto"
           >
-            {submitting ? "…" : `Execution: ${executionOn ? "ON" : "OFF"}`}
+            {submitting ? "…" : "Enable Paper Execution"}
           </button>
+        ) : null}
 
+        {canStopAuto ? (
           <button
             type="button"
-            disabled={submitting || panic || (!autoOn && Boolean(autoBlockReason))}
-            aria-label={
-              autoOn ? "Turn Auto Trading off" : "Turn Auto Trading on"
-            }
-            title={
-              autoOn
-                ? "Turn OFF — scan may continue, no auto submits"
-                : (autoBlockReason ??
-                  "Turn ON — qualified proposals may go through risk + execution")
-            }
+            disabled={submitting}
+            aria-label="Turn Auto Trading off"
+            title="Turn OFF — scan may continue, no auto submits"
             onClick={() => {
-              if (autoOn) {
-                void (async () => {
-                  const res = await onAction("/api/auto-trade/disable");
-                  if (res.ok) pushToast("Auto Trading disabled", "warn");
-                  else pushToast(res.error ?? "Action failed", "bad");
-                })();
-                return;
-              }
-              if (autoBlockReason) {
-                pushToast(autoBlockReason, "warn");
-                return;
-              }
+              void (async () => {
+                const res = await onAction("/api/auto-trade/disable");
+                if (res.ok) pushToast("Auto Trading disabled", "warn");
+                else pushToast(res.error ?? "Action failed", "bad");
+              })();
+            }}
+            className="ui-btn min-h-11 w-full border border-amber-500/40 bg-amber-500/15 px-4 py-2 text-sm font-semibold text-amber-50 hover:bg-amber-500/25 disabled:opacity-50 sm:w-auto"
+          >
+            {submitting ? "…" : "Stop Auto Trading"}
+          </button>
+        ) : null}
+
+        {canStartAuto ? (
+          <button
+            type="button"
+            disabled={submitting}
+            aria-label="Turn Auto Trading on"
+            title="Turn ON — qualified proposals may go through risk + execution"
+            onClick={() => {
               setModalError(null);
               setModal("enableAuto");
             }}
-            className={`ui-btn min-h-11 min-w-[10.5rem] px-3 py-2 text-sm font-medium disabled:opacity-50 ${
-              autoOn
-                ? "bg-emerald-700 text-white hover:bg-emerald-600"
-                : "border border-zinc-500 bg-zinc-800 text-zinc-100 hover:bg-zinc-700"
-            }`}
+            className="ui-btn min-h-11 w-full border border-emerald-500/40 bg-emerald-500/15 px-4 py-2 text-sm font-semibold text-emerald-50 hover:bg-emerald-500/25 disabled:opacity-50 sm:w-auto"
           >
-            {submitting ? "…" : `Auto Trading: ${autoOn ? "ON" : "OFF"}`}
+            {submitting ? "…" : "Start Auto Trading"}
           </button>
+        ) : null}
 
+        {!panic ? (
           <button
             type="button"
-            disabled={submitting || panic}
+            disabled={submitting}
             aria-label="Run scan now"
             title="Run one watchlist scan now"
             onClick={() => {
@@ -266,11 +335,123 @@ export function AutoTradeControlsPanel({
                 else pushToast(res.error ?? "Scan failed", "bad");
               })();
             }}
-            className="ui-btn min-h-11 border border-sky-500/40 bg-sky-950/40 px-3 py-2 text-sm font-medium text-sky-100 hover:bg-sky-900/50 disabled:opacity-50"
+            className="ui-btn min-h-11 w-full border border-[var(--border)] px-3 py-2 text-sm text-zinc-200 hover:bg-[var(--panel-elevated)] disabled:opacity-50 sm:w-auto"
           >
             {submitting ? "…" : "Run Scan Now"}
           </button>
+        ) : null}
+      </div>
 
+      {feedback ? (
+        <p className="mt-2 text-xs text-emerald-300" role="status">
+          {feedback}
+        </p>
+      ) : null}
+
+      {/* Engine blockingReasons stay available for Advanced Details; not shown on the main desk. */}
+      <span className="sr-only">
+        {(engine?.blockingReasons?.length ?? 0) > 0
+          ? "Additional engine notes available in Advanced Details"
+          : "No additional engine notes"}
+      </span>
+
+      {compactStatus ? <div className="mt-4">{compactStatus}</div> : null}
+
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="text-xs text-[var(--muted)] underline decoration-[var(--border)] underline-offset-2 hover:text-zinc-200"
+        >
+          Trading settings
+        </button>
+        {moreActions}
+      </div>
+
+      <ConfirmActionModal
+        open={modal === "enableExecution"}
+        title="Enable paper execution?"
+        description="The system will be allowed to submit paper orders after strategy and risk approval."
+        confirmLabel="Enable Execution"
+        cancelLabel="Keep Execution Off"
+        loading={modalBusy}
+        error={modalError}
+        allowBackdropClose
+        onCancel={closeModal}
+        onConfirm={() =>
+          void runModalAction(
+            "/api/auto-trade/execution/enable",
+            undefined,
+            "Execution enabled",
+            "warn",
+          )
+        }
+      >
+        <LimitsList riskLimits={riskLimits} />
+      </ConfirmActionModal>
+
+      <ConfirmActionModal
+        open={modal === "enableAuto"}
+        title="Enable automatic paper trading?"
+        description="Qualified proposals may be submitted automatically after all strategy and risk checks pass."
+        confirmLabel="Enable Auto Trading"
+        cancelLabel="Keep Auto Trading Off"
+        loading={modalBusy}
+        error={modalError}
+        allowBackdropClose
+        onCancel={closeModal}
+        onConfirm={() =>
+          void runModalAction(
+            "/api/auto-trade/enable",
+            undefined,
+            "Auto Trading enabled",
+            "ok",
+          )
+        }
+      >
+        <LimitsList riskLimits={riskLimits} />
+      </ConfirmActionModal>
+    </section>
+  );
+}
+
+/** Emergency / safety actions under More actions — kept in this module for verify scans. */
+export function AutoTradeEmergencyControls({
+  engine,
+  busy,
+  marketOpen,
+  positions,
+  onAction,
+}: SharedProps) {
+  const { pushToast } = useToast();
+  const kill = engine?.killSwitchActive ?? false;
+  const panic = engine?.panicStopActive ?? false;
+  const engineRunning =
+    !kill &&
+    !panic &&
+    Boolean(engine?.canScan) &&
+    engine?.engineState !== "PAUSED" &&
+    engine?.engineState !== "EMERGENCY_STOPPED";
+  const submitting = busy;
+
+  return (
+    <details className="group relative">
+      <summary className="cursor-pointer list-none text-xs text-[var(--muted)] underline decoration-[var(--border)] underline-offset-2 hover:text-zinc-200 [&::-webkit-details-marker]:hidden">
+        More actions
+      </summary>
+      <div
+        id="emergency-controls"
+        className="mt-2 space-y-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/80 p-3"
+      >
+        <p className="text-xs text-[var(--muted)]">
+          Urgent paper-trading safety actions
+          <AutoTradeInfoTip
+            label="More information about emergency controls"
+            text="Emergency controls can stop new automated activity or close open paper positions. These actions should only be used deliberately."
+          />
+        </p>
+
+        <div className="flex flex-wrap gap-2">
           {engineRunning ? (
             <button
               type="button"
@@ -284,7 +465,7 @@ export function AutoTradeControlsPanel({
                   else pushToast(res.error ?? "Action failed", "bad");
                 })();
               }}
-              className="ui-btn min-h-11 bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+              className="ui-btn border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-50 hover:bg-amber-500/20 disabled:opacity-50"
             >
               {submitting ? "…" : "Pause New Entries"}
             </button>
@@ -301,7 +482,7 @@ export function AutoTradeControlsPanel({
                   else pushToast(res.error ?? "Action failed", "bad");
                 })();
               }}
-              className="ui-btn min-h-11 bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+              className="ui-btn border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-50 hover:bg-emerald-500/20 disabled:opacity-50"
             >
               {submitting ? "…" : "Resume New Entries"}
             </button>
@@ -329,7 +510,7 @@ export function AutoTradeControlsPanel({
                   } else pushToast(res.error ?? "Action failed", "bad");
                 })();
               }}
-              className="ui-btn min-h-11 border border-amber-500/50 bg-amber-950 px-3 py-2 text-sm font-medium text-amber-100 hover:bg-amber-900 disabled:opacity-50"
+              className="ui-btn border border-amber-500/50 bg-amber-950 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900 disabled:opacity-50"
             >
               {submitting
                 ? "…"
@@ -340,81 +521,14 @@ export function AutoTradeControlsPanel({
           )}
         </div>
 
-        {!autoOn && autoBlockReason ? (
-          <p className="mt-3 text-xs text-amber-200">{autoBlockReason}</p>
-        ) : null}
-
-        {(engine?.blockingReasons?.length ?? 0) > 0 ? (
-          <ul className="mt-3 space-y-0.5 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-            {engine!.blockingReasons.map((r) => (
-              <li key={r}>{r}</li>
-            ))}
-          </ul>
-        ) : null}
-
-        {feedback ? (
-          <p className="mt-2 text-xs text-emerald-300" role="status">
-            {feedback}
-          </p>
-        ) : null}
-
-        <p className="mt-3 text-[11px] text-[var(--muted)]">
-          Paper only. Live trading remains blocked. Paper execution and Auto
-          Trading still require risk approval before any paper order.
-        </p>
-
-        <ConfirmActionModal
-          open={modal === "enableExecution"}
-          title="Enable paper execution?"
-          description="The system will be allowed to submit paper orders after strategy and risk approval."
-          confirmLabel="Enable Execution"
-          cancelLabel="Keep Execution Off"
-          loading={modalBusy}
-          error={modalError}
-          allowBackdropClose
-          onCancel={closeModal}
-          onConfirm={() =>
-            void runModalAction(
-              "/api/auto-trade/execution/enable",
-              undefined,
-              "Execution enabled",
-              "warn",
-            )
-          }
-        >
-          <LimitsList riskLimits={riskLimits} />
-        </ConfirmActionModal>
-
-        <ConfirmActionModal
-          open={modal === "enableAuto"}
-          title="Enable automatic paper trading?"
-          description="Qualified proposals may be submitted automatically after all strategy and risk checks pass."
-          confirmLabel="Enable Auto Trading"
-          cancelLabel="Keep Auto Trading Off"
-          loading={modalBusy}
-          error={modalError}
-          allowBackdropClose
-          onCancel={closeModal}
-          onConfirm={() =>
-            void runModalAction(
-              "/api/auto-trade/enable",
-              undefined,
-              "Auto Trading enabled",
-              "ok",
-            )
-          }
-        >
-          <LimitsList riskLimits={riskLimits} />
-        </ConfirmActionModal>
-      </section>
-
-      <SafetyActionsCard
-        busy={busy}
-        marketOpen={marketOpen}
-        positions={positions}
-        panicActive={panic}
-        onAction={onAction}
-      />
-    </div>
+        <SafetyActionsCard
+          busy={busy}
+          marketOpen={marketOpen}
+          positions={positions}
+          panicActive={panic}
+          onAction={onAction}
+        />
+      </div>
+    </details>
   );
 }

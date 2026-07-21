@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { Panel } from "@/components/ui/Panel";
 import { AutoTradeInfoTip } from "@/components/auto-trade/AutoTradeInfoTip";
 import { formatTime } from "@/lib/format";
 import {
@@ -17,11 +16,12 @@ export function V1UniversePanel({ universe }: { universe: Universe | null }) {
 
   if (!universe) {
     return (
-      <Panel title="Watchlist status">
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold text-zinc-100">Watchlist status</h3>
         <p className="text-sm text-[var(--muted)]">
           No eligible symbols data yet. Run a scan to validate the watchlist.
         </p>
-      </Panel>
+      </div>
     );
   }
 
@@ -45,15 +45,15 @@ export function V1UniversePanel({ universe }: { universe: Universe | null }) {
     }));
 
   return (
-    <Panel
-      title="Watchlist status"
-      action={
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-zinc-100">Watchlist status</h3>
         <span className="text-xs text-[var(--muted)]">
           Eligible watchlist
           <AutoTradeInfoTip text="Symbols that currently pass Version 1 price, liquidity, and spread filters." />
         </span>
-      }
-    >
+      </div>
+
       <ul className="grid gap-2 text-sm text-zinc-300 sm:grid-cols-2 lg:grid-cols-3">
         <li>
           Configured symbols:{" "}
@@ -82,7 +82,7 @@ export function V1UniversePanel({ universe }: { universe: Universe | null }) {
       </ul>
 
       {universe.eligibleCount === 0 ? (
-        <p className="mt-3 text-sm text-amber-200">
+        <p className="text-sm text-amber-200">
           No eligible symbols — Auto Trading cannot be turned on until at least
           one symbol passes Version 1 filters.
         </p>
@@ -90,7 +90,7 @@ export function V1UniversePanel({ universe }: { universe: Universe | null }) {
 
       <button
         type="button"
-        className="ui-btn mt-3 border border-[var(--border)] text-sm"
+        className="ui-btn border border-[var(--border)] text-sm"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
@@ -98,7 +98,7 @@ export function V1UniversePanel({ universe }: { universe: Universe | null }) {
       </button>
 
       {open ? (
-        <div className="mt-3 overflow-x-auto">
+        <div className="overflow-x-auto">
           <table className="w-full min-w-[20rem] text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-[var(--muted)]">
               <tr>
@@ -140,7 +140,7 @@ export function V1UniversePanel({ universe }: { universe: Universe | null }) {
           </table>
         </div>
       ) : (
-        <p className="mt-2 text-xs text-[var(--muted)]">
+        <p className="text-xs text-[var(--muted)]">
           Eligible:{" "}
           {eligible.length
             ? eligible
@@ -151,6 +151,6 @@ export function V1UniversePanel({ universe }: { universe: Universe | null }) {
           {eligible.length > 12 ? "…" : ""}
         </p>
       )}
-    </Panel>
+    </div>
   );
 }

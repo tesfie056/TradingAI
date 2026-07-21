@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Panel } from "@/components/ui/Panel";
 import { AutoTradeInfoTip } from "@/components/auto-trade/AutoTradeInfoTip";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { formatRemainingToGoal } from "@/lib/auto-trade/operator-blockers";
@@ -51,6 +50,7 @@ export function V1DailyProgressPanel({
 }) {
   const [data, setData] = useState<DailyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showExtra, setShowExtra] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,30 +79,30 @@ export function V1DailyProgressPanel({
   const pct = target > 0 ? Math.min(100, Math.round((completed / target) * 100)) : 0;
 
   return (
-    <Panel
-      title="Daily progress"
-      action={
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-zinc-100">Daily progress</h3>
         <span className="text-xs text-[var(--muted)]">
           Daily goal
           <AutoTradeInfoTip text="Completed Version 1 round trips today. Progress only — never forces trades." />
         </span>
-      }
-    >
+      </div>
+
       {error ? (
         <p className="text-sm text-red-300">{error}</p>
       ) : !data ? (
         <p className="text-sm text-[var(--muted)]">Loading daily progress…</p>
       ) : (
         <>
-          <p className="mb-1 text-base font-medium text-zinc-100">
+          <p className="text-base font-medium text-zinc-100">
             Daily goal: {completed} of {target} completed trades
           </p>
-          <p className="mb-2 text-sm text-zinc-300">
+          <p className="text-sm text-zinc-300">
             {formatRemainingToGoal(data.session.remaining)}
           </p>
 
           <div
-            className="mb-3 h-2.5 overflow-hidden rounded-full bg-zinc-800"
+            className="h-2.5 overflow-hidden rounded-full bg-zinc-800"
             role="progressbar"
             aria-valuemin={0}
             aria-valuemax={target}
@@ -115,26 +115,7 @@ export function V1DailyProgressPanel({
             />
           </div>
 
-          <p className="mb-3 text-xs text-[var(--muted)]">{SAFETY_EXPLANATION}</p>
-          <p className="mb-3 text-xs text-[var(--muted)]">{data.explanation}</p>
-
-          {(data.config.warnings.length > 0 ||
-            data.session.configurationWarnings.length > 0 ||
-            executionOff ||
-            autoOff) && (
-            <ul className="mb-3 space-y-1 text-sm text-amber-200">
-              {executionOff ? <li>Paper execution is disabled — no new entries.</li> : null}
-              {autoOff ? <li>Auto Trading is disabled — no automatic submissions.</li> : null}
-              {data.config.warnings.map((w) => (
-                <li key={w.code}>{w.message}</li>
-              ))}
-              {data.session.configurationWarnings.map((w) => (
-                <li key={w}>{w}</li>
-              ))}
-            </ul>
-          )}
-
-          <ul className="mb-3 grid gap-2 text-sm text-zinc-300 sm:grid-cols-2 lg:grid-cols-4">
+          <ul className="grid gap-2 text-sm text-zinc-300 sm:grid-cols-2 lg:grid-cols-4">
             <li>
               Wins:{" "}
               <strong className="text-emerald-300">{data.session.wins}</strong>
@@ -153,63 +134,102 @@ export function V1DailyProgressPanel({
                 className={
                   data.session.realizedNetPnL >= 0
                     ? "text-emerald-300"
-                    : "text-amber-200"
+                    : "text-red-300"
                 }
               >
                 ${data.session.realizedNetPnL.toFixed(2)}
               </strong>
             </li>
-            <li>
-              Open managed trades:{" "}
-              <strong className="text-zinc-100">{data.session.openTrades}</strong>
-            </li>
-            <li>
-              Pending entries:{" "}
-              <strong className="text-sky-300">{data.session.pendingEntries}</strong>
-            </li>
-            <li>
-              Pending exits:{" "}
-              <strong className="text-sky-300">{data.session.pendingExits}</strong>
-            </li>
-            <li>
-              Target:{" "}
-              <strong
-                className={
-                  data.session.targetReached ? "text-emerald-300" : "text-zinc-100"
-                }
-              >
-                {data.session.targetReached ? "Reached" : "In progress"}
-              </strong>
-            </li>
-            <li>
-              Trading paused:{" "}
-              <strong className="text-zinc-100">
-                {data.session.tradingPaused ? "Yes" : "No"}
-              </strong>
-            </li>
           </ul>
 
-          {data.session.pauseReason ? (
-            <p className="mb-2 text-sm text-amber-200">
-              Pause reason: {data.session.pauseReason}
-            </p>
-          ) : null}
+          <button
+            type="button"
+            className="ui-btn border border-[var(--border)] px-2.5 py-1 text-xs text-zinc-300 hover:bg-[var(--panel-elevated)]"
+            aria-expanded={showExtra}
+            onClick={() => setShowExtra((v) => !v)}
+          >
+            {showExtra ? "Hide goal details" : "Show goal details"}
+          </button>
 
-          {!data.session.targetReached &&
-          data.session.failureReasons.length > 0 ? (
-            <div className="mb-1">
-              <p className="mb-1 text-xs uppercase tracking-wide text-[var(--muted)]">
-                Why the daily goal is incomplete
-              </p>
-              <ul className="space-y-1 text-sm text-[var(--muted)]">
-                {data.session.failureReasons.slice(0, 8).map((r) => (
-                  <li key={r.code}>• {r.message}</li>
-                ))}
+          {showExtra ? (
+            <div className="space-y-3 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--panel-elevated)]/40 px-3 py-3">
+              <p className="text-xs text-[var(--muted)]">{SAFETY_EXPLANATION}</p>
+              <p className="text-xs text-[var(--muted)]">{data.explanation}</p>
+
+              {(data.config.warnings.length > 0 ||
+                data.session.configurationWarnings.length > 0 ||
+                executionOff ||
+                autoOff) && (
+                <ul className="space-y-1 text-sm text-amber-200">
+                  {executionOff ? (
+                    <li>Paper execution is disabled — no new entries.</li>
+                  ) : null}
+                  {autoOff ? (
+                    <li>Auto Trading is disabled — no automatic submissions.</li>
+                  ) : null}
+                  {data.config.warnings.map((w) => (
+                    <li key={w.code}>{w.message}</li>
+                  ))}
+                  {data.session.configurationWarnings.map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              )}
+
+              <ul className="grid gap-2 text-sm text-zinc-300 sm:grid-cols-2">
+                <li>
+                  Open managed trades:{" "}
+                  <strong className="text-zinc-100">{data.session.openTrades}</strong>
+                </li>
+                <li>
+                  Pending entries:{" "}
+                  <strong className="text-sky-300">{data.session.pendingEntries}</strong>
+                </li>
+                <li>
+                  Pending exits:{" "}
+                  <strong className="text-sky-300">{data.session.pendingExits}</strong>
+                </li>
+                <li>
+                  Target:{" "}
+                  <strong
+                    className={
+                      data.session.targetReached ? "text-emerald-300" : "text-zinc-100"
+                    }
+                  >
+                    {data.session.targetReached ? "Reached" : "In progress"}
+                  </strong>
+                </li>
+                <li>
+                  Trading paused:{" "}
+                  <strong className="text-zinc-100">
+                    {data.session.tradingPaused ? "Yes" : "No"}
+                  </strong>
+                </li>
               </ul>
+
+              {data.session.pauseReason ? (
+                <p className="text-sm text-amber-200">
+                  Pause reason: {data.session.pauseReason}
+                </p>
+              ) : null}
+
+              {!data.session.targetReached &&
+              data.session.failureReasons.length > 0 ? (
+                <div>
+                  <p className="mb-1 text-xs uppercase tracking-wide text-[var(--muted)]">
+                    Why the daily goal is incomplete
+                  </p>
+                  <ul className="space-y-1 text-sm text-[var(--muted)]">
+                    {data.session.failureReasons.slice(0, 8).map((r) => (
+                      <li key={r.code}>• {r.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </>
       )}
-    </Panel>
+    </div>
   );
 }

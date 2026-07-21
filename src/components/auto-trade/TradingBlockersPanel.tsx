@@ -1,9 +1,12 @@
 "use client";
 
-import { Panel } from "@/components/ui/Panel";
 import { formatTime } from "@/lib/format";
 import type { OperatorBlockerSummary } from "@/lib/auto-trade/operator-blockers";
 
+/**
+ * Additional blocker detail for Risk Protection.
+ * The single primary status message is shown on AutoTradeOverviewCard.
+ */
 export function TradingBlockersPanel({
   summary,
   loading,
@@ -13,23 +16,32 @@ export function TradingBlockersPanel({
 }) {
   if (loading && !summary) {
     return (
-      <Panel title="Why trading is not active">
+      <div>
+        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+          Why trading is not active
+        </h3>
         <p className="text-sm text-[var(--muted)]">Checking blockers…</p>
-      </Panel>
+      </div>
     );
   }
 
   if (!summary) {
     return (
-      <Panel title="Why trading is not active">
+      <div>
+        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+          Why trading is not active
+        </h3>
         <p className="text-sm text-[var(--muted)]">Blocker status unavailable.</p>
-      </Panel>
+      </div>
     );
   }
 
   if (summary.tradingActive && summary.all.length === 0) {
     return (
-      <Panel title="Why trading is not active">
+      <div>
+        <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+          Why trading is not active
+        </h3>
         <p className="text-sm text-emerald-200">
           Auto Trading is active and ready for paper orders when a qualified setup appears.
         </p>
@@ -38,13 +50,21 @@ export function TradingBlockersPanel({
             Last updated {formatTime(summary.updatedAt)}
           </p>
         ) : null}
-      </Panel>
+      </div>
     );
   }
 
   const primary = summary.primary;
   return (
-    <Panel title="Why trading is not active">
+    <div>
+      <h3 className="mb-2 text-sm font-semibold text-zinc-100">
+        Why trading is not active
+      </h3>
+      <p className="mb-3 text-xs text-[var(--muted)]">
+        The main status above already highlights the top reason. Extra details are listed
+        here when helpful.
+      </p>
+
       {primary ? (
         <div className="rounded-[var(--radius-sm)] border border-amber-500/30 bg-amber-500/10 px-3 py-3">
           <p className="text-sm font-semibold text-amber-50">{primary.label}</p>
@@ -85,6 +105,6 @@ export function TradingBlockersPanel({
           Last updated {formatTime(summary.updatedAt)}
         </p>
       ) : null}
-    </Panel>
+    </div>
   );
 }

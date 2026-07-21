@@ -163,7 +163,11 @@ export function SafetyActionsCard({
           <li>Unrealized P/L: {fmtUsd(unrealized)}</li>
           <li>
             Market:{" "}
-            {marketOpen == null ? "Unknown" : marketOpen ? "Open" : "Closed"}
+            {marketOpen === true
+              ? "Open"
+              : marketOpen === false
+                ? "Closed"
+                : "Unavailable"}
           </li>
         </ul>
       </ConfirmActionModal>

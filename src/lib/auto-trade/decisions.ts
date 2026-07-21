@@ -108,7 +108,9 @@ export async function hasProcessedOpportunity(
   return rows.some(
     (r) =>
       r.opportunityId === opportunityId &&
-      (r.status === "submitted" || r.status === "filled"),
+      (r.status === "pending" ||
+        r.status === "submitted" ||
+        r.status === "filled"),
   );
 }
 

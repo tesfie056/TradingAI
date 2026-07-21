@@ -6,7 +6,6 @@ import {
   getAccount,
   getLatestBars,
   getLatestQuotes,
-  getMarketClock,
   getPositions,
   placePaperOrder,
 } from "@/lib/alpaca/client";
@@ -25,6 +24,7 @@ import {
   isAutoPaperTradingEnabled,
   isPaperOrderExecutionEnabled,
 } from "@/lib/config";
+import { getFreshBrokerClock } from "@/lib/market/broker-clock";
 import { assessDataQuality } from "@/lib/market/data-quality";
 import type { MonitorOpportunity } from "@/lib/monitor/types";
 import {
@@ -54,6 +54,7 @@ import {
   fetchMultiTimeframeBars,
 } from "@/lib/stocks/fetch-context";
 import { recordSignalDecision } from "@/lib/training/signal-loop";
+import { recordLearningDecision } from "@/lib/learning/record";
 import { getRiskTradingConfig } from "@/lib/config/risk-config";
 import { buildLongProposal } from "@/lib/trading/proposal";
 import { submitRiskApprovedEntry } from "@/lib/trading/submit-approved";
@@ -93,9 +94,9 @@ async function buildEligibilityContext(
 ) {
   const symbol = opp.symbol.toUpperCase();
   const side = opp.action === "SELL" ? "sell" : "buy";
-  const [clock, quotes, latestBars, multiBars, marketCondition, runtime] =
+  const [brokerClock, quotes, latestBars, multiBars, marketCondition, runtime] =
     await Promise.all([
-      getMarketClock(),
+      getFreshBrokerClock({ force: true }),
       getLatestQuotes([symbol]),
       getLatestBars([symbol]),
       fetchMultiTimeframeBars([symbol]),
@@ -106,7 +107,7 @@ async function buildEligibilityContext(
   const quote = quotes[0];
   const bars = multiBars.bars5Min[symbol] ?? [];
   const dataQuality = assessDataQuality({
-    isMarketOpen: clock.isOpen,
+    isMarketOpen: brokerClock.isOpen,
     quote,
     bars,
   });
@@ -119,7 +120,7 @@ async function buildEligibilityContext(
     bars5MinBySymbol: multiBars.bars5Min,
     bars15MinBySymbol: multiBars.bars15Min,
     timeframe: "5Min",
-    isMarketOpen: clock.isOpen,
+    isMarketOpen: brokerClock.isOpen,
     marketCondition,
   });
   const decision = decisions[0];
@@ -225,7 +226,7 @@ async function buildEligibilityContext(
 
 export async function processAutoTradesForScan(input: {
   opportunities: MonitorOpportunity[];
-  marketOpen: boolean;
+  marketOpen: boolean | null;
 }): Promise<ProcessAutoTradeResult> {
   const result: ProcessAutoTradeResult = {
     processed: 0,
@@ -346,6 +347,19 @@ export async function processAutoTradesForScan(input: {
         skipCodes: ctx.eligibility.blockers.map((b) => b.code),
         reason: allReasons || primary?.message || "skipped",
         autoTradeDecisionId: skipped.id,
+      });
+      void recordLearningDecision({
+        decisionId: skipped.id,
+        eventType: "rejection",
+        symbol: opp.symbol,
+        confidence: opp.confidence,
+        isMarketOpen: input.marketOpen,
+        rejectionReason: allReasons || primary?.message || "skipped",
+        risk: {
+          approved: false,
+          code: primary?.code ?? "eligibility",
+          reason: primary?.message ?? allReasons,
+        },
       });
       result.decisions.push(skipped);
       result.skipped += 1;
@@ -507,12 +521,62 @@ export async function processAutoTradesForScan(input: {
         },
       });
 
-      const clock = await getMarketClock().catch(() => null);
+      // Fresh Alpaca clock immediately before paper submit (never guess open).
+      const preSubmitClock = await getFreshBrokerClock({ force: true });
+      if (preSubmitClock.status === "unavailable" || preSubmitClock.isOpen == null) {
+        const rejected = await updateAutoTradeDecision(decision.id, {
+          status: "skipped",
+          blockers: [
+            {
+              code: "market_status_unavailable",
+              message:
+                preSubmitClock.error ??
+                "Market status unavailable — broker clock could not be confirmed.",
+            },
+          ],
+        });
+        await appendAutoTradeLog({
+          event: "skipped",
+          level: "warn",
+          message: `${opp.symbol}: market status unavailable — order blocked`,
+          symbol: opp.symbol,
+          opportunityId: opp.id,
+          skipCode: "market_status_unavailable",
+          meta: { decisionId: decision.id },
+        });
+        if (rejected) result.decisions.push(rejected);
+        result.skipped += 1;
+        continue;
+      }
+      if (preSubmitClock.isOpen !== true) {
+        const rejected = await updateAutoTradeDecision(decision.id, {
+          status: "skipped",
+          blockers: [
+            {
+              code: "market_closed",
+              message: "Regular market is closed — paper entry blocked.",
+            },
+          ],
+        });
+        await appendAutoTradeLog({
+          event: "skipped",
+          level: "info",
+          message: `${opp.symbol}: market closed — order blocked`,
+          symbol: opp.symbol,
+          opportunityId: opp.id,
+          skipCode: "market_closed",
+          meta: { decisionId: decision.id },
+        });
+        if (rejected) result.decisions.push(rejected);
+        result.skipped += 1;
+        continue;
+      }
+
       const submitted = await submitRiskApprovedEntry({
         proposal,
-        marketOpen: Boolean(clock?.isOpen),
-        closeAtIso: clock?.nextClose ?? null,
-        marketState: clock?.isOpen ? "open" : "closed",
+        marketOpen: true,
+        closeAtIso: preSubmitClock.nextClose ?? null,
+        marketState: "open",
         decisionId: decision.id,
         strategyVersion: "1.0.0",
       });

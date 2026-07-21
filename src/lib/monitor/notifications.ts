@@ -19,8 +19,8 @@ export function buildScanNotifications(
       notes.push({
         id: newId(),
         kind: "ready_for_preview",
-        title: "Opportunity ready for paper preview",
-        detail: `${o.action} ${o.symbol} · score ${o.score.toFixed(2)} · confirm manually — no auto trade`,
+        title: "Setup eligible for Auto Trading",
+        detail: `${o.action} ${o.symbol} · score ${o.score.toFixed(2)} · Auto Trading submits a paper order when execution gates pass`,
         symbol: o.symbol,
         timestamp: now,
         paperOnly: true,

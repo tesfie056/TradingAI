@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getWatchlist, parseWatchlist } from "@/lib/config";
 import { runSimpleBacktest } from "@/lib/performance/backtest";
-import { appendStrategyBacktestResult } from "@/lib/strategy/results";
 import { PaperTradingSafetyError } from "@/lib/alpaca/safety";
 import { filterUsStockSymbols } from "@/lib/stocks/universe";
 
@@ -14,6 +13,7 @@ function parseSymbols(raw: string | null): string[] {
 
 /**
  * Historical decision simulation only — never places orders.
+ * GET is read-only (does not append strategy results). Prefer /api/learning/backtests for I-2.
  * GET ?symbol=AAPL&start=YYYY-MM-DD&end=YYYY-MM-DD&lookbackBars=120
  */
 export async function GET(request: Request) {
@@ -55,11 +55,13 @@ export async function GET(request: Request) {
       endDate,
     });
 
-    void appendStrategyBacktestResult(result).catch(() => {
-      // non-fatal
+    return NextResponse.json({
+      ...result,
+      paperOnly: true,
+      liveTradingAllowed: false,
+      persisted: false,
+      note: "GET /api/backtest is read-only. Use POST /api/learning/backtests/run to persist I-2 runs.",
     });
-
-    return NextResponse.json(result);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Backtest failed";

@@ -5,8 +5,8 @@
  */
 
 import { generateWatchlistDecisions } from "@/lib/ai/decision";
-import { getMarketClock } from "@/lib/alpaca/client";
 import { getCachedLatestQuotes } from "@/lib/cache/quote-cache";
+import { getFreshBrokerClock } from "@/lib/market/broker-clock";
 import { getCachedWatchlistNews } from "@/lib/cache/news-cache";
 import { getWatchlist } from "@/lib/config";
 import { resolveEligibleUniverse } from "@/lib/universe/service";
@@ -46,6 +46,13 @@ import type {
   MonitorOpportunity,
 } from "@/lib/monitor/types";
 
+export type MonitorScanOutcome =
+  | "completed"
+  | "paused"
+  | "failed"
+  | "rate_limited"
+  | "empty_universe";
+
 export type MonitorScanResult = {
   paperOnly: true;
   canPlaceOrders: false;
@@ -55,17 +62,27 @@ export type MonitorScanResult = {
   /** Watchlist symbols that passed universe hard filters. */
   universeEligible?: number;
   universeRejected?: number;
+  /** Configured watchlist size when known (even if scan was skipped). */
+  watchlistSize?: number;
   opportunities: MonitorOpportunity[];
   opportunitiesFound: number;
   topOpportunity: MonitorOpportunity | null;
   topSignalLabel: string;
   lastScan: LastScanSnapshot | null;
   notifications: MonitorNotification[];
-  marketOpen: boolean;
+  /**
+   * Alpaca session flag from this scan.
+   * null = unknown / unchanged (skip paths must not force closed).
+   */
+  marketOpen: boolean | null;
   ollamaUsed: boolean;
   ollamaFallback: boolean;
   aiProvider: string;
   rateLimited?: boolean;
+  /** True when the scan did not evaluate symbols (pause / rate-limit skip). */
+  skipped?: boolean;
+  outcome?: MonitorScanOutcome;
+  pauseReason?: string;
   error?: string;
   autoTrade?: {
     processed: number;
@@ -88,23 +105,27 @@ export async function runMonitorScan(options?: {
       meta: { retryAfterMs: rate.retryAfterMs },
     });
     const active = await readActiveOpportunities();
+    const watchlist = getWatchlist();
     return {
       paperOnly: true,
       canPlaceOrders: false,
       scannedAt: new Date().toISOString(),
-      symbols: getWatchlist(),
+      symbols: watchlist,
       stocksScanned: 0,
+      watchlistSize: watchlist.length,
       opportunities: active,
       opportunitiesFound: 0,
       topOpportunity: pickTopOpportunity(active),
       topSignalLabel: "Scan rate-limited — using prior opportunities",
       lastScan: null,
       notifications: [],
-      marketOpen: false,
+      marketOpen: null,
       ollamaUsed: false,
       ollamaFallback: false,
       aiProvider: "skipped",
       rateLimited: true,
+      skipped: true,
+      outcome: "rate_limited",
       error: `Rate limited — wait ${Math.ceil(rate.retryAfterMs / 1000)}s`,
     };
   }
@@ -117,12 +138,26 @@ export async function runMonitorScan(options?: {
 
   try {
     const { getAutoTradeRuntime } = await import("@/lib/auto-trade/runtime");
+    const {
+      describeEnginePauseReason,
+      isEnginePaused,
+    } = await import("@/lib/auto-trade/pause-reason");
     const runtime = await getAutoTradeRuntime();
-    if (runtime.killSwitch || runtime.panicStop || runtime.runtimeDisabled) {
+    if (isEnginePaused(runtime)) {
+      const pauseReason = describeEnginePauseReason(runtime);
+      const watchlistSize = getWatchlist().length;
       await appendMonitorLog({
         event: "scan_completed",
-        message:
-          "Scan skipped — engine paused or emergency stopped (no new proposals)",
+        level: "warn",
+        message: `Scan skipped — ${pauseReason}`,
+        meta: {
+          skipped: true,
+          outcome: "paused",
+          panicStop: runtime.panicStop,
+          killSwitch: runtime.killSwitch,
+          runtimeDisabled: runtime.runtimeDisabled,
+          watchlistSize,
+        },
       });
       return {
         paperOnly: true,
@@ -130,21 +165,59 @@ export async function runMonitorScan(options?: {
         scannedAt: new Date().toISOString(),
         stocksScanned: 0,
         symbols: [],
+        watchlistSize,
         opportunities: await readActiveOpportunities(),
         opportunitiesFound: 0,
         topOpportunity: null,
-        topSignalLabel: "Engine paused — scanning suspended",
+        topSignalLabel: "Scanning suspended — engine paused",
         lastScan: null,
         notifications: [],
-        marketOpen: false,
+        marketOpen: null,
         ollamaUsed: false,
         ollamaFallback: false,
         aiProvider: "skipped",
-        error: "Engine paused — no new scans or proposals",
+        skipped: true,
+        outcome: "paused",
+        pauseReason,
+        error: pauseReason,
       };
     }
 
     const watchlist = getWatchlist();
+    await appendMonitorLog({
+      event: "scan_started",
+      message: `Watchlist loaded with ${watchlist.length} stock${watchlist.length === 1 ? "" : "s"}`,
+      meta: { watchlistSize: watchlist.length },
+    });
+    if (watchlist.length === 0) {
+      await appendMonitorLog({
+        event: "scan_error",
+        level: "error",
+        message: "Scan could not start — the watchlist could not be loaded.",
+      });
+      return {
+        paperOnly: true,
+        canPlaceOrders: false,
+        scannedAt: new Date().toISOString(),
+        stocksScanned: 0,
+        symbols: [],
+        watchlistSize: 0,
+        opportunities: [],
+        opportunitiesFound: 0,
+        topOpportunity: null,
+        topSignalLabel: "Watchlist unavailable",
+        lastScan: null,
+        notifications: [],
+        marketOpen: null,
+        ollamaUsed: false,
+        ollamaFallback: false,
+        aiProvider: "skipped",
+        skipped: true,
+        outcome: "failed",
+        error: "Scan could not start. The watchlist could not be loaded.",
+      };
+    }
+
     const universe = await resolveEligibleUniverse({ symbols: watchlist });
     if (universe.warnings.length > 0) {
       const { logUniverseWarnings } = await import("@/lib/universe/service");
@@ -161,21 +234,24 @@ export async function runMonitorScan(options?: {
     // Never fall back to the raw watchlist when filters reject everything.
     const symbols = universe.eligibleSymbols;
     if (symbols.length === 0) {
+      const watchlistSize = universe.breakdown.watchlistSize || watchlist.length;
       await appendMonitorLog({
         event: "scan_completed",
         message:
-          "Scan aborted — zero symbols passed universe filters (no silent fallback)",
+          "Scan completed — zero symbols passed universe filters (no silent fallback)",
         meta: {
-          watchlistSize: universe.breakdown.watchlistSize,
+          watchlistSize,
           rejected: universe.rejected.length,
+          outcome: "empty_universe",
         },
       });
       return {
         paperOnly: true,
         canPlaceOrders: false,
         scannedAt: new Date().toISOString(),
-        stocksScanned: 0,
-        symbols: [],
+        stocksScanned: watchlistSize,
+        symbols: watchlist,
+        watchlistSize,
         universeEligible: 0,
         universeRejected: universe.rejected.length,
         opportunities: [],
@@ -191,23 +267,20 @@ export async function runMonitorScan(options?: {
           timestamp: new Date().toISOString(),
           paperOnly: true as const,
         })),
-        marketOpen: false,
+        marketOpen: null,
         ollamaUsed: false,
         ollamaFallback: false,
         aiProvider: "skipped",
+        outcome: "empty_universe",
         error:
           universe.warnings[0] ??
           "Zero eligible symbols after universe filters",
       };
     }
 
-    const [clock, quotes, multiBars, marketCondition, newsResult] =
+    const [brokerClock, quotes, multiBars, marketCondition, newsResult] =
       await Promise.all([
-        getMarketClock().catch((err) => {
-          throw new Error(
-            `Alpaca clock failed: ${err instanceof Error ? err.message : "unknown"}`,
-          );
-        }),
+        getFreshBrokerClock({ force: true }),
         getCachedLatestQuotes(symbols).catch(() => []),
         fetchMultiTimeframeBars(symbols).catch(() => ({
           bars1Min: {} as Record<string, never>,
@@ -227,6 +300,8 @@ export async function runMonitorScan(options?: {
           },
         })),
       ]);
+    const clockOpen = brokerClock.isOpen;
+    const sessionOpen = clockOpen === true;
 
     const { bySymbol: newsBySymbol, aiStatus } = await analyzeWatchlistNews(
       symbols,
@@ -301,7 +376,7 @@ export async function runMonitorScan(options?: {
       bars5MinBySymbol: multiBars.bars5Min,
       bars15MinBySymbol: multiBars.bars15Min,
       timeframe: "5Min",
-      isMarketOpen: Boolean(clock?.isOpen),
+      isMarketOpen: clockOpen,
       newsBySymbol,
       marketCondition,
       universeEligibleSymbols: symbols,
@@ -335,7 +410,7 @@ export async function runMonitorScan(options?: {
         const q = quoteMap.get(sym);
         const bars5 = multiBars.bars5Min?.[sym] ?? [];
         const dq = assessDataQuality({
-          isMarketOpen: Boolean(clock?.isOpen),
+          isMarketOpen: clockOpen,
           quote: q,
           bars: bars5,
           nowMs,
@@ -348,11 +423,11 @@ export async function runMonitorScan(options?: {
           bars1Min: multiBars.bars1Min?.[sym],
           dataQuality: dq,
           context: {
-            isMarketOpen: Boolean(clock?.isOpen),
-            minutesSinceOpen: clock?.isOpen
+            isMarketOpen: sessionOpen,
+            minutesSinceOpen: sessionOpen
               ? minutesSinceRegularOpen(nowMs)
               : null,
-            minutesToClose: clock?.isOpen
+            minutesToClose: sessionOpen
               ? minutesUntilRegularClose(nowMs)
               : null,
             hasOpenPosition: openPositionSymbols.includes(sym),
@@ -375,7 +450,7 @@ export async function runMonitorScan(options?: {
       await saveV1StrategyLatest({
         scanId,
         evaluatedAt: new Date().toISOString(),
-        marketOpen: Boolean(clock?.isOpen),
+        marketOpen: sessionOpen,
         results: v1Results,
       });
       await appendV1StrategyDecisions(
@@ -406,14 +481,14 @@ export async function runMonitorScan(options?: {
       const { runV1LifecycleScanTick } = await import(
         "@/lib/trading/v1-lifecycle/scan-hook"
       );
-      await runV1LifecycleScanTick({ marketOpen: Boolean(clock?.isOpen) });
+      await runV1LifecycleScanTick({ marketOpen: sessionOpen });
     } catch {
       // Lifecycle monitor must not break scans
     }
 
     const autoTrade = await processAutoTradesForScan({
       opportunities,
-      marketOpen: Boolean(clock?.isOpen),
+      marketOpen: clockOpen,
     });
 
     const scannedAt = new Date().toISOString();
@@ -490,7 +565,9 @@ export async function runMonitorScan(options?: {
         universeEligible: symbols.length,
         universeRejected: universe.rejected.length,
         opportunitiesFound: opportunities.length,
-        marketOpen: Boolean(clock?.isOpen),
+        marketOpen: clockOpen,
+        marketSessionStatus: brokerClock.status,
+        clockError: brokerClock.error,
         ollamaUsed,
         autoSubmitted: autoTrade.submitted,
         autoSkipped: autoTrade.skipped,
@@ -505,6 +582,7 @@ export async function runMonitorScan(options?: {
       scannedAt,
       symbols: watchlist,
       stocksScanned: watchlist.length,
+      watchlistSize: watchlist.length,
       universeEligible: symbols.length,
       universeRejected: universe.rejected.length,
       opportunities,
@@ -513,10 +591,11 @@ export async function runMonitorScan(options?: {
       topSignalLabel: formatTopSignalLabel(lastScan),
       lastScan,
       notifications,
-      marketOpen: Boolean(clock?.isOpen),
+      marketOpen: clockOpen,
       ollamaUsed,
       ollamaFallback,
       aiProvider: aiStatus.activeProvider,
+      outcome: "completed",
       autoTrade: {
         processed: autoTrade.processed,
         submitted: autoTrade.submitted,
@@ -531,19 +610,22 @@ export async function runMonitorScan(options?: {
       level: "error",
       message,
     });
+    const watchlist = getWatchlist();
     return {
       paperOnly: true,
       canPlaceOrders: false,
       scannedAt: new Date().toISOString(),
-      symbols: getWatchlist(),
+      symbols: watchlist,
       stocksScanned: 0,
+      watchlistSize: watchlist.length,
+      outcome: "failed",
       opportunities: [],
       opportunitiesFound: 0,
       topOpportunity: null,
       topSignalLabel: "Scan failed",
       lastScan: null,
       notifications: [],
-      marketOpen: false,
+      marketOpen: null,
       ollamaUsed: false,
       ollamaFallback: false,
       aiProvider: "error",

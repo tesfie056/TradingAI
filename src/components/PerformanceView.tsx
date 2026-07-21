@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { Panel } from "@/components/ui/Panel";
+import { ExpandableSection } from "@/components/ui/ExpandableSection";
+import { InfoTip } from "@/components/ui/InfoTip";
 import { ActionBadge } from "@/components/ui/badges";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { PaperOnlyBanner } from "@/components/ui/PaperOnlyBanner";
-import { SafetyStrip } from "@/components/ui/SafetyStrip";
+import { SummaryMetric } from "@/components/ui/SummaryMetric";
 import { ScrollTable } from "@/components/ui/ScrollTable";
 import { fetchJson } from "@/lib/client/fetch-json";
 import { formatTime } from "@/lib/format";
@@ -14,12 +16,13 @@ import type { AccuracyBucket } from "@/lib/performance/types";
 
 function BucketTable({ title, rows }: { title: string; rows: AccuracyBucket[] }) {
   return (
-    <Panel title={title}>
+    <div className="space-y-2">
+      <h3 className="text-sm font-semibold text-zinc-100">{title}</h3>
       <ScrollTable minWidthClass="min-w-[18rem]">
         <table className="w-full text-left text-base">
           <thead>
             <tr className="border-b border-[var(--border)] text-sm text-[var(--muted)]">
-              <th className="py-2 pr-2 font-medium">Key</th>
+              <th className="py-2 pr-2 font-medium">Group</th>
               <th className="py-2 pr-2 font-medium">Total</th>
               <th className="py-2 pr-2 font-medium">Accuracy</th>
               <th className="py-2 font-medium">Est. P/L</th>
@@ -29,7 +32,7 @@ function BucketTable({ title, rows }: { title: string; rows: AccuracyBucket[] })
             {rows.length === 0 ? (
               <tr>
                 <td colSpan={4} className="py-3 text-[var(--muted)]">
-                  No evaluated buckets yet
+                  No evaluated groups yet
                 </td>
               </tr>
             ) : (
@@ -53,33 +56,101 @@ function BucketTable({ title, rows }: { title: string; rows: AccuracyBucket[] })
           </tbody>
         </table>
       </ScrollTable>
-    </Panel>
+    </div>
   );
 }
+
+const PAGE_SIZE = 10;
 
 export function PerformanceView() {
   const [data, setData] = useState<PerformancePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [page, setPage] = useState(0);
+  const [actionFilter, setActionFilter] = useState<"ALL" | "BUY" | "SELL" | "HOLD">(
+    "ALL",
+  );
+
+  async function loadPerformance(isRefresh = false) {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
+    try {
+      const res = await fetchJson<PerformancePayload>("/api/performance");
+      setData(res);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await fetchJson<PerformancePayload>("/api/performance");
-        if (!cancelled) setData(res);
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    void loadPerformance(false);
   }, []);
+
+  const history = data?.history ?? [];
+  const summary = data?.summary;
+  const evaluated = summary?.evaluated ?? 0;
+  const total = summary?.totalDecisions ?? 0;
+
+  const completed = useMemo(
+    () =>
+      history.filter(
+        (h) =>
+          h.overallLabel === "correct" ||
+          h.overallLabel === "incorrect" ||
+          h.overallLabel === "neutral",
+      ),
+    [history],
+  );
+
+  const wins = completed.filter((h) => h.overallLabel === "correct").length;
+  const winRate =
+    completed.length > 0 ? wins / completed.length : evaluated > 0
+      ? history.filter((h) => h.overallLabel === "correct").length /
+        Math.max(1, evaluated)
+      : null;
+
+  const avgPnl = useMemo(() => {
+    const pnls = completed
+      .map(
+        (h) =>
+          h.outcomes.h1.estimatedPnlPct ??
+          h.outcomes.m15.estimatedPnlPct ??
+          h.outcomes.nextClose.estimatedPnlPct,
+      )
+      .filter((n): n is number => n != null && Number.isFinite(n));
+    if (pnls.length === 0) return null;
+    return pnls.reduce((a, b) => a + b, 0) / pnls.length;
+  }, [completed]);
+
+  const totalPnl = useMemo(() => {
+    const pnls = completed
+      .map(
+        (h) =>
+          h.outcomes.h1.estimatedPnlPct ??
+          h.outcomes.m15.estimatedPnlPct ??
+          h.outcomes.nextClose.estimatedPnlPct,
+      )
+      .filter((n): n is number => n != null && Number.isFinite(n));
+    if (pnls.length === 0) return null;
+    return pnls.reduce((a, b) => a + b, 0);
+  }, [completed]);
+
+  const analyticsRows = useMemo(() => {
+    return history.filter(
+      (h) => actionFilter === "ALL" || h.action === actionFilter,
+    );
+  }, [history, actionFilter]);
+
+  const pageCount = Math.max(1, Math.ceil(analyticsRows.length / PAGE_SIZE));
+  const pageRows = analyticsRows.slice(
+    page * PAGE_SIZE,
+    page * PAGE_SIZE + PAGE_SIZE,
+  );
 
   if (loading) {
     return <p className="text-sm text-[var(--muted)]">Loading performance…</p>;
@@ -92,116 +163,178 @@ export function PerformanceView() {
     );
   }
 
-  const summary = data?.summary;
-  const history = data?.history ?? [];
-  const evaluated = summary?.evaluated ?? 0;
-  const total = summary?.totalDecisions ?? 0;
-
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="h1">Performance</h1>
-        <p className="mt-2 text-base text-[var(--muted)]">
-          Paper estimates only — decisions are scored without placing orders.
-        </p>
-      </div>
+      <PageHeader
+        title="Performance"
+        description="How has paper trading performed?"
+        actions={
+          <button
+            type="button"
+            disabled={refreshing}
+            onClick={() => void loadPerformance(true)}
+            className="ui-btn border border-[var(--border)] bg-[var(--panel-elevated)] disabled:opacity-50"
+          >
+            {refreshing ? "Refreshing…" : "Refresh"}
+          </button>
+        }
+      />
 
-      <SafetyStrip orderExecutionEnabled={false} />
+      <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <SummaryMetric
+          label="Total paper P/L"
+          tip="Sum of estimated P/L on completed scored results"
+          value={
+            totalPnl == null ? "—" : `${(totalPnl * 100).toFixed(2)}%`
+          }
+          valueClass={
+            totalPnl == null
+              ? "text-zinc-100"
+              : totalPnl > 0
+                ? "text-emerald-300"
+                : totalPnl < 0
+                  ? "text-red-300"
+                  : "text-zinc-100"
+          }
+        />
+        <SummaryMetric
+          label="Completed trades"
+          tip="Scored decisions with an outcome"
+          value={String(completed.length)}
+        />
+        <SummaryMetric
+          label="Win rate"
+          tip="Share of completed results labeled as wins"
+          value={winRate == null ? "—" : `${(winRate * 100).toFixed(0)}%`}
+        />
+        <SummaryMetric
+          label="Average trade"
+          tip="Average estimated P/L across completed results"
+          value={
+            avgPnl == null ? "—" : `${(avgPnl * 100).toFixed(2)}%`
+          }
+        />
+      </dl>
 
-      <PaperOnlyBanner detail="estimated gain/loss is not real P&L" />
-
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
-        <Panel>
-          <div className="text-xs uppercase tracking-wide text-[var(--muted)]">
-            Decisions logged
-          </div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums">{total}</div>
-        </Panel>
-        <Panel>
-          <div className="text-xs uppercase tracking-wide text-[var(--muted)]">
-            Evaluated
-          </div>
-          <div className="mt-1 text-2xl font-semibold tabular-nums">
-            {evaluated}
-          </div>
-        </Panel>
-        <Panel>
-          <div className="text-xs uppercase tracking-wide text-[var(--muted)]">
-            Order execution
-          </div>
-          <div className="mt-1 text-2xl font-semibold text-amber-200">OFF*</div>
-          <p className="mt-1 text-[10px] text-[var(--muted)]">
-            *Performance tracking never executes orders
-          </p>
-        </Panel>
-      </div>
-
-      {evaluated === 0 && (
-        <div className="border border-[var(--border)] bg-[var(--panel)] px-4 py-3 text-sm text-[var(--foreground)]/90">
-          <p className="font-semibold text-amber-100">
-            Why Evaluated = 0
-          </p>
-          <ul className="mt-2 list-disc space-y-1 pl-5 text-[var(--muted)]">
-            <li>
-              Decisions are pending until future price data is available.
-            </li>
-            <li>Market closed decisions may remain pending.</li>
-            {total === 0 ? (
-              <li>
-                No decisions logged yet — refresh the Control Room to generate
-                and store decisions.
-              </li>
-            ) : (
-              <li>
-                {total} decision{total === 1 ? "" : "s"} logged; outcomes will
-                fill in after later prices (15m / 1h / next close) are available.
-              </li>
-            )}
-          </ul>
-        </div>
-      )}
-
-      {total === 0 ? (
-        <EmptyState title="No evaluated decisions yet">
+      {completed.length === 0 ? (
+        <EmptyState title="No completed trade results yet">
           <p>
-            Refresh the Control Room to log paper decisions. Accuracy and
-            estimated P/L appear after future prices are available.
+            Performance statistics will appear after paper trades close and later
+            prices are available.
           </p>
         </EmptyState>
       ) : (
-        <>
-          <div className="grid gap-4 lg:grid-cols-3">
-            <BucketTable title="By symbol" rows={summary?.bySymbol ?? []} />
-            <BucketTable title="By action" rows={summary?.byAction ?? []} />
-            <BucketTable
-              title="Confidence vs result"
-              rows={summary?.confidenceBuckets ?? []}
-            />
-          </div>
-
-          <Panel title="Recent scored decisions">
-            {history.length === 0 ? (
-              <EmptyState title="No evaluated decisions yet">
-                <p>
-                  Decisions are pending until future price data is available.
-                  Market closed decisions may remain pending.
-                </p>
-              </EmptyState>
-            ) : (
-              <ScrollTable minWidthClass="min-w-[36rem] sm:min-w-[44rem]">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-[var(--border)] text-xs text-[var(--muted)] uppercase">
-                      <th className="py-2 pr-3 font-medium">Time</th>
-                      <th className="py-2 pr-3 font-medium">Symbol</th>
-                      <th className="py-2 pr-3 font-medium">Action</th>
-                      <th className="py-2 pr-3 font-medium">Conf.</th>
-                      <th className="py-2 pr-3 font-medium">Outcome</th>
-                      <th className="py-2 font-medium">Est. P/L</th>
+        <Panel title="Recent completed trades">
+          <ScrollTable minWidthClass="min-w-[32rem]">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-[var(--border)] text-xs uppercase text-[var(--muted)]">
+                  <th className="py-2 pr-3 font-medium">Time</th>
+                  <th className="py-2 pr-3 font-medium">Symbol</th>
+                  <th className="py-2 pr-3 font-medium">Action</th>
+                  <th className="py-2 pr-3 font-medium">Outcome</th>
+                  <th className="py-2 font-medium">Est. P/L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {completed.slice(0, 12).map((h) => {
+                  const pnl =
+                    h.outcomes.h1.estimatedPnlPct ??
+                    h.outcomes.m15.estimatedPnlPct ??
+                    h.outcomes.nextClose.estimatedPnlPct;
+                  return (
+                    <tr
+                      key={h.id}
+                      className="border-b border-[var(--border)]/50"
+                    >
+                      <td className="whitespace-nowrap py-2 pr-3 text-[var(--muted)]">
+                        {formatTime(h.timestamp)}
+                      </td>
+                      <td className="py-2 pr-3 font-semibold">{h.symbol}</td>
+                      <td className="py-2 pr-3">
+                        <ActionBadge action={h.action} />
+                      </td>
+                      <td className="py-2 pr-3 text-xs capitalize">
+                        {h.overallLabel}
+                      </td>
+                      <td className="py-2 tabular-nums">
+                        {pnl == null ? "—" : `${(pnl * 100).toFixed(2)}%`}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {history.slice(0, 40).map((h) => {
+                  );
+                })}
+              </tbody>
+            </table>
+          </ScrollTable>
+        </Panel>
+      )}
+
+      <ExpandableSection
+        title="Decision analytics"
+        tip={
+          <InfoTip text="Monitoring activity and scored decision rows. Collapsed by default." />
+        }
+        summary={
+          total > 0
+            ? `${total} decisions logged · ${evaluated} evaluated`
+            : "No decision monitoring activity yet."
+        }
+        expandLabel="View decision analytics"
+        collapseLabel="Hide decision analytics"
+      >
+        {total === 0 ? (
+          <EmptyState title="No paper decisions yet">
+            <p>
+              Use Overview or Watchlist to generate paper decisions. Accuracy and
+              estimated P/L appear after future prices are available.
+            </p>
+          </EmptyState>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs text-[var(--muted)]">
+                Filter
+                <select
+                  value={actionFilter}
+                  onChange={(e) => {
+                    setActionFilter(
+                      e.target.value as "ALL" | "BUY" | "SELL" | "HOLD",
+                    );
+                    setPage(0);
+                  }}
+                  className="ml-2 border border-[var(--border)] bg-[var(--panel-elevated)] px-2 py-1 text-sm text-zinc-100"
+                >
+                  <option value="ALL">All actions</option>
+                  <option value="BUY">BUY</option>
+                  <option value="SELL">SELL</option>
+                  <option value="HOLD">HOLD</option>
+                </select>
+              </label>
+              <p className="text-xs text-[var(--muted)]">
+                {analyticsRows.length} rows · page {page + 1} of {pageCount}
+              </p>
+            </div>
+            <ScrollTable minWidthClass="min-w-[36rem]">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--border)] text-xs uppercase text-[var(--muted)]">
+                    <th className="py-2 pr-3 font-medium">Time</th>
+                    <th className="py-2 pr-3 font-medium">Symbol</th>
+                    <th className="py-2 pr-3 font-medium">Action</th>
+                    <th className="py-2 pr-3 font-medium">Confidence</th>
+                    <th className="py-2 pr-3 font-medium">Outcome</th>
+                    <th className="py-2 font-medium">Est. P/L</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-3 text-[var(--muted)]">
+                        No matching decisions
+                      </td>
+                    </tr>
+                  ) : (
+                    pageRows.map((h) => {
                       const pnl =
                         h.outcomes.h1.estimatedPnlPct ??
                         h.outcomes.m15.estimatedPnlPct ??
@@ -211,36 +344,71 @@ export function PerformanceView() {
                           key={h.id}
                           className="border-b border-[var(--border)]/50"
                         >
-                          <td className="py-2 pr-3 text-[var(--muted)] whitespace-nowrap">
+                          <td className="whitespace-nowrap py-2 pr-3 text-[var(--muted)]">
                             {formatTime(h.timestamp)}
                           </td>
-                          <td className="py-2 pr-3 font-semibold">
-                            {h.symbol}
-                          </td>
+                          <td className="py-2 pr-3 font-semibold">{h.symbol}</td>
                           <td className="py-2 pr-3">
                             <ActionBadge action={h.action} />
                           </td>
                           <td className="py-2 pr-3 tabular-nums">
                             {(h.confidence * 100).toFixed(0)}%
                           </td>
-                          <td className="py-2 pr-3 text-xs uppercase">
-                            {h.overallLabel}
+                          <td className="py-2 pr-3 text-xs capitalize">
+                            {h.overallLabel === "pending"
+                              ? "Pending"
+                              : h.overallLabel}
                           </td>
                           <td className="py-2 tabular-nums">
-                            {pnl == null
-                              ? "—"
-                              : `${(pnl * 100).toFixed(2)}%`}
+                            {pnl == null ? "—" : `${(pnl * 100).toFixed(2)}%`}
                           </td>
                         </tr>
                       );
-                    })}
-                  </tbody>
-                </table>
-              </ScrollTable>
-            )}
-          </Panel>
-        </>
-      )}
+                    })
+                  )}
+                </tbody>
+              </table>
+            </ScrollTable>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="ui-btn border border-[var(--border)] px-3 py-1 text-xs disabled:opacity-40"
+                disabled={page <= 0}
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className="ui-btn border border-[var(--border)] px-3 py-1 text-xs disabled:opacity-40"
+                disabled={page >= pageCount - 1}
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+      </ExpandableSection>
+
+      <ExpandableSection
+        title="Advanced statistics"
+        tip={
+          <InfoTip text="Detailed bucket statistics for research. Collapsed by default." />
+        }
+        summary="By symbol, action, and confidence groups."
+        expandLabel="View advanced statistics"
+        collapseLabel="Hide advanced statistics"
+      >
+        <div className="grid gap-6 lg:grid-cols-3">
+          <BucketTable title="By symbol" rows={summary?.bySymbol ?? []} />
+          <BucketTable title="By action" rows={summary?.byAction ?? []} />
+          <BucketTable
+            title="Confidence vs result"
+            rows={summary?.confidenceBuckets ?? []}
+          />
+        </div>
+      </ExpandableSection>
     </div>
   );
 }

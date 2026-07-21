@@ -37,6 +37,9 @@ async function main() {
 
   const page = read("src/components/auto-trade/AutoTradePageView.tsx");
   const header = read("src/components/auto-trade/AutoTradeStatusHeader.tsx");
+  const overview = read("src/components/auto-trade/AutoTradeOverviewCard.tsx");
+  const expandable = read("src/components/ui/ExpandableSection.tsx");
+  const primaryStatus = read("src/lib/auto-trade/primary-status.ts");
   const daily = read("src/components/auto-trade/V1DailyProgressPanel.tsx");
   const managed = read("src/components/auto-trade/V1ManagedTradeCard.tsx");
   const external = read("src/components/auto-trade/ExternalPositionsWarning.tsx");
@@ -154,7 +157,9 @@ async function main() {
   assert.ok(safety.includes('requireTypedText="CLOSE ALL"'));
   assert.ok(controls.includes("SafetyActionsCard"));
   assert.ok(controls.includes("Run Scan Now"));
-  assert.ok(page.indexOf("AutoTradeControlsPanel") < page.indexOf("AdvancedAutoTradeDetails"));
+  assert.ok(
+    page.indexOf("<AutoTradeControlsPanel") < page.indexOf("<AdvancedAutoTradeDetails"),
+  );
   console.log("✓ enable confirmations, auto gates, separated safety actions");
 
   // 39–40 universe
@@ -238,8 +243,9 @@ async function main() {
   );
   console.log("✓ UI verify does not submit orders; live trading hard-blocked");
 
-  // Page composition
+  // Page composition — primary overview + expandable secondary sections
   for (const name of [
+    "AutoTradeOverviewCard",
     "AutoTradeStatusHeader",
     "V1DailyProgressPanel",
     "V1ManagedTradeCard",
@@ -250,9 +256,47 @@ async function main() {
     "V1UniversePanel",
     "RecentAutoTradeActivity",
     "AdvancedAutoTradeDetails",
+    "ExpandableSection",
   ]) {
     assert.ok(page.includes(name), `page must compose ${name}`);
   }
+  assert.ok(page.includes('title="Position Details"'));
+  assert.ok(page.includes('title="Today\'s Activity"') || page.includes('title="Today’s Activity"') || page.includes("Today's Activity"));
+  assert.ok(page.includes('title="Risk Protection"'));
+  assert.ok(
+    page.includes('title="Strategy Information"') ||
+      page.includes('title="How the strategy works"'),
+  );
+  assert.ok(advanced.includes("Advanced Details"));
+  assert.ok(overview.includes("Trading status"));
+  assert.ok(overview.includes("Account value"));
+  assert.ok(overview.includes("Daily trades used"));
+  assert.ok(primaryStatus.includes("Auto-trading is active"));
+  assert.ok(primaryStatus.includes("Market is closed"));
+  assert.ok(primaryStatus.includes("Daily trade limit reached"));
+  assert.ok(primaryStatus.includes("Waiting for a valid setup"));
+  assert.ok(primaryStatus.includes("Safety protection stopped trading"));
+  assert.ok(expandable.includes("defaultOpen"));
+  assert.ok(
+    page.indexOf("<AutoTradeControlsPanel") < page.indexOf("<AutoTradeOverviewCard"),
+    "main controls must appear before compact trading status",
+  );
+  assert.ok(
+    page.indexOf("<AutoTradeControlsPanel") < page.indexOf("<ExpandableSection"),
+    "controls must appear before expandable sections",
+  );
+  assert.ok(
+    page.indexOf("<AutoTradeControlsPanel") < page.indexOf("<AdvancedAutoTradeDetails"),
+  );
+  assert.ok(
+    page.includes("AutoTradeEmergencyControls"),
+    "emergency controls remain accessible from the control card",
+  );
+  assert.ok(
+    !page.includes("UnprotectedPositionsBanner") &&
+      !page.includes("PositionsNeedingAttention"),
+    "position warnings must not appear in the normal Auto Trading view",
+  );
   console.log("✓ Auto Trade page composes focused V1 operator components");
 
   console.log("verify:v1-auto-trade-ui passed");

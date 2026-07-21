@@ -37,7 +37,7 @@ function buildSnapshot(
   symbol: string,
   quote: AlpacaQuote | undefined,
   bars5Min: AlpacaBar[],
-  isMarketOpen: boolean,
+  isMarketOpen: boolean | null,
   extras?: {
     bars1Min?: AlpacaBar[];
     bars15Min?: AlpacaBar[];
@@ -116,7 +116,8 @@ export function decideForSymbol(
 ): AiDecision {
   const market = marketCondition ?? defaultMarket();
   const dq = snapshot.dataQuality;
-  const isOpen = dq.isMarketOpen;
+  // Strategy gates need a boolean; unavailable clock is treated as not open.
+  const isOpen = dq.isMarketOpen === true;
   const context = defaultV1Context(isOpen, v1Context);
 
   const v1 = evaluateV1SimpleLong({
@@ -187,7 +188,8 @@ export function generateWatchlistDecisions(input: {
   bars5MinBySymbol?: Record<string, AlpacaBar[]>;
   bars15MinBySymbol?: Record<string, AlpacaBar[]>;
   timeframe?: "1Min" | "5Min" | "15Min";
-  isMarketOpen: boolean;
+  /** null = broker clock unavailable (orders blocked; not reported as closed). */
+  isMarketOpen: boolean | null;
   nowMs?: number;
   newsBySymbol?: Record<string, SymbolNewsAnalysis>;
   marketCondition?: MarketCondition;

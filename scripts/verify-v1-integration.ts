@@ -16,6 +16,7 @@ import {
   scenarioSafetyOverridesDailyGoal,
   scenarioZeroEligibleBlocksAuto,
   scenarioLegacyShortConflict,
+  scenarioMorningUnattendedResume,
   FakeAlpacaBroker,
 } from "./lib/v1-harness";
 import {
@@ -75,6 +76,12 @@ async function main() {
     console.log("— Scenario J legacy short conflict");
     await scenarioLegacyShortConflict();
     console.log("✓ J AAPL short blocks AAPL; other symbols remain evaluable");
+
+    console.log("— Scenario K morning unattended resume");
+    await scenarioMorningUnattendedResume();
+    console.log(
+      "✓ K overnight→open delay→eligible places once; no duplicate; accepted≠filled",
+    );
 
     // Illegal transitions
     assert.equal(canTransition("CANDIDATE_SELECTED", "COMPLETED"), false);
